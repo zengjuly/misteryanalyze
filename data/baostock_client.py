@@ -1,16 +1,59 @@
 #!/usr/bin/env python3
 # baostock_client.py - 基于Baostock的股票数据获取模块
-# import baostock as bs  # 注释掉，使用模拟数据
-from .mock_baostock_client import BaostockClient
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
 import logging
+import re
 from typing import List, Dict, Optional, Tuple
+
+try:
+    import baostock as bs
+    BAOSTOCK_AVAILABLE = True
+except ImportError:
+    BAOSTOCK_AVAILABLE = False
+    logging.warning("⚠️ baostock 未安装，将使用模拟数据源")
+
+# pandas 3.0 移除了 DataFrame.append，baostock 旧版本仍在使用
+# 添加兼容层避免 'DataFrame' object has no attribute 'append'
+if not hasattr(pd.DataFrame, 'append'):
+    def _append_compat(self, other, ignore_index=False, **kwargs):
+        """pandas 3.0 兼容：DataFrame.append 替代实现"""
+        return pd.concat([self, other], ignore_index=ignore_index)
+    pd.DataFrame.append = _append_compat
+    logging.debug("已为 pandas 3.0 添加 DataFrame.append 兼容层")
 
 class BaostockClient:
     """Baostock数据获取客户端"""
+    
+    @staticmethod
+    def normalize_stock_code(stock_code: str) -> str:
+        """
+        标准化股票代码为baostock格式（9位，如sh.600000）
+        支持输入格式: sh600150 / sh.600150 / 600150 / 000001
+        :param stock_code: 原始股票代码
+        :return: 标准化后的代码
+        """
+        code = str(stock_code).strip().lower()
+        
+        # 已经是标准格式 sh.600000 / sz.000001
+        if re.match(r'^(sh|sz|bj)\.\d{6}$', code):
+            return code
+        
+        # 带前缀无点号格式 sh600150 / sz000001
+        if re.match(r'^(sh|sz|bj)\d{6}$', code):
+            return f"{code[:2]}.{code[2:]}"
+        
+        # 纯数字格式 600150 / 000001
+        if re.match(r'^\d{6}$', code):
+            if code.startswith(('60', '68', '90')):
+                return f"sh.{code}"
+            else:
+                return f"sz.{code}"
+        
+        # 无法识别的格式，原样返回（让baostock报错）
+        return str(stock_code)
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -56,12 +99,14 @@ class BaostockClient:
                      adjustflag: str = '3') -> pd.DataFrame:
         """
         获取日线数据
-        :param stock_code: 股票代码，格式如sh.600000或sz.000001
+        :param stock_code: 股票代码，支持sh600000/sh.600000/600000等格式
         :param start_date: 开始日期，格式如'2023-01-01'
         :param end_date: 结束日期，格式如'2023-12-31'
         :param adjustflag: 复权类型，默认'3'为后复权
         :return: 日线数据DataFrame
         """
+        # 标准化股票代码
+        stock_code = self.normalize_stock_code(stock_code)
         try:
             result = bs.query_history_k_data_plus(
                 stock_code, 
@@ -114,10 +159,12 @@ class BaostockClient:
     def get_weekly_data(self, stock_code: str, start_date: str, end_date: str,
                        adjustflag: str = '3') -> pd.DataFrame:
         """获取周线数据"""
+        # 标准化股票代码
+        stock_code = self.normalize_stock_code(stock_code)
         try:
             result = bs.query_history_k_data_plus(
                 stock_code,
-                "date,code,open,high,low,close,volume,amount,turn,tradestatus,pctChg,isST",
+                "date,code,open,high,low,close,volume,amount,turn,pctChg",
                 start_date=start_date,
                 end_date=end_date,
                 frequency="w",
@@ -145,7 +192,9 @@ class BaostockClient:
                         'isST': '是否ST'
                     })
                     
-                    data = data[data['是否ST'] != 'ST']
+                    # 过滤ST股票（仅当存在该列时）
+                    if '是否ST' in data.columns:
+                        data = data[data['是否ST'] != 'ST']
                     
                     self.logger.info(f"📊 获取 {stock_code} 周线数据: {len(data)} 条记录")
                     return data
@@ -163,10 +212,12 @@ class BaostockClient:
     def get_monthly_data(self, stock_code: str, start_date: str, end_date: str,
                         adjustflag: str = '3') -> pd.DataFrame:
         """获取月线数据"""
+        # 标准化股票代码
+        stock_code = self.normalize_stock_code(stock_code)
         try:
             result = bs.query_history_k_data_plus(
                 stock_code,
-                "date,code,open,high,low,close,volume,amount,turn,tradestatus,pctChg,isST",
+                "date,code,open,high,low,close,volume,amount,turn,pctChg",
                 start_date=start_date,
                 end_date=end_date,
                 frequency="m",
@@ -194,7 +245,9 @@ class BaostockClient:
                         'isST': '是否ST'
                     })
                     
-                    data = data[data['是否ST'] != 'ST']
+                    # 过滤ST股票（仅当存在该列时）
+                    if '是否ST' in data.columns:
+                        data = data[data['是否ST'] != 'ST']
                     
                     self.logger.info(f"📅 获取 {stock_code} 月线数据: {len(data)} 条记录")
                     return data
@@ -257,11 +310,14 @@ class BaostockClient:
                 self.logger.error(f"❌ 获取行业板块数据失败: {result.error_msg}")
                 return pd.DataFrame()
         except Exception as e:
-            self.logger.error(f"❌ 获取行业板块数据异常: {e}")
+            # baostock 部分版本存在兼容性问题，行业数据失败不影响主分析流程
+            self.logger.warning(f"⚠️ 获取行业板块数据异常（不影响主分析）: {e}")
             return pd.DataFrame()
     
     def get_index_data(self, index_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """获取指数数据（用于大盘分析）"""
+        # 标准化指数代码（指数也使用 sh.000001 格式）
+        index_code = self.normalize_stock_code(index_code)
         try:
             result = bs.query_history_k_data_plus(
                 index_code,

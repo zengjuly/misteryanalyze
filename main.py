@@ -34,7 +34,7 @@ class StockAnalysisSystem:
         
         # 初始化各个模块
         self.baostock_client = BaostockClient()
-        self.data_processor = DataProcessor()
+        self.data_processor = DataProcessor(self.baostock_client)
         self.ma_indicators = MAIndicators()
         self.trend_indicators = TrendIndicators()
         self.momentum_indicators = MomentumIndicators()
@@ -131,73 +131,81 @@ class StockAnalysisSystem:
                 self.logger.warning("⚠️ 没有指定要分析的股票")
                 return {}
             
-            # 获取股票数据
-            self.logger.info(f"📊 获取股票数据，共{len(stock_codes)}只股票")
-            stock_data = self.baostock_client.get_stock_data(stock_codes)
+            # 登录baostock数据源
+            if not self.baostock_client.login():
+                self.logger.error("❌ Baostock登录失败，无法获取数据")
+                return {}
             
-            # 获取行业数据
-            industry_data = self.baostock_client.get_industry_data()
-            
-            # 获取大盘数据
-            market_data = self.baostock_client.get_market_data(self.config['market_indices'])
-            
-            # 数据预处理
-            self.logger.info("🔧 数据预处理...")
-            processed_data = self.data_processor.process_all_data(
-                stock_data, industry_data, market_data
-            )
-            
-            # 计算技术指标
-            self.logger.info("📈 计算技术指标...")
-            indicators_data = self._calculate_all_indicators(processed_data)
-            
-            # Mystery理论分析
-            self.logger.info("🎯 Mystery理论分析...")
-            analysis_results = self._perform_mystery_analysis(
-                indicators_data, processed_data
-            )
-            
-            # 形态识别
-            self.logger.info("🔍 形态识别...")
-            pattern_results = self._recognize_patterns(processed_data)
-            
-            # 合并分析结果
-            self.logger.info("📋 合并分析结果...")
-            final_results = self._merge_analysis_results(
-                analysis_results, pattern_results, processed_data
-            )
-            
-            # 汇总分析
-            self.logger.info("📊 汇总分析...")
-            summary = self.summary_analyzer.summarize_analysis_results(final_results)
-            recommendations = self.summary_analyzer.generate_recommendations(summary)
-            
-            # 生成报告
-            self.logger.info("📄 生成报告...")
-            excel_path = self.excel_generator.generate_stock_analysis_report(
-                final_results, processed_data
-            )
-            html_path = self.html_generator.generate_analysis_report(
-                final_results, processed_data
-            )
-            summary_path = self.summary_analyzer.export_summary_report(
-                summary, recommendations
-            )
-            
-            # 生成实时仪表板
-            dashboard_path = self.html_generator.generate_real_time_dashboard(final_results)
-            
-            self.logger.info("✅ 股票分析完成！")
-            
-            return {
-                'analysis_results': final_results,
-                'summary': summary,
-                'recommendations': recommendations,
-                'excel_report': excel_path,
-                'html_report': html_path,
-                'summary_report': summary_path,
-                'dashboard': dashboard_path
-            }
+            try:
+                # 获取股票数据（通过DataProcessor，内部处理baostock调用）
+                self.logger.info(f"📊 获取股票数据，共{len(stock_codes)}只股票")
+                stock_data = self.data_processor.get_all_stocks_data(stock_codes)
+                
+                # 获取行业数据
+                industry_data = self.baostock_client.get_industry_data()
+                
+                # 获取大盘数据
+                market_data = self.data_processor.get_market_index_data()
+                
+                # 数据预处理（get_all_stocks_data 已返回 {code: {'daily','weekly','monthly'}} 结构）
+                self.logger.info("🔧 数据预处理...")
+                processed_data = stock_data
+                
+                # 计算技术指标
+                self.logger.info("📈 计算技术指标...")
+                indicators_data = self._calculate_all_indicators(processed_data)
+                
+                # Mystery理论分析
+                self.logger.info("🎯 Mystery理论分析...")
+                analysis_results = self._perform_mystery_analysis(
+                    indicators_data, processed_data
+                )
+                
+                # 形态识别
+                self.logger.info("🔍 形态识别...")
+                pattern_results = self._recognize_patterns(processed_data)
+                
+                # 合并分析结果
+                self.logger.info("📋 合并分析结果...")
+                final_results = self._merge_analysis_results(
+                    analysis_results, pattern_results, processed_data
+                )
+                
+                # 汇总分析
+                self.logger.info("📊 汇总分析...")
+                summary = self.summary_analyzer.summarize_analysis_results(final_results)
+                recommendations = self.summary_analyzer.generate_recommendations(summary)
+                
+                # 生成报告
+                self.logger.info("📄 生成报告...")
+                excel_path = self.excel_generator.generate_stock_analysis_report(
+                    final_results, processed_data
+                )
+                html_path = self.html_generator.generate_analysis_report(
+                    final_results, processed_data
+                )
+                summary_path = self.summary_analyzer.export_summary_report(
+                    summary, recommendations
+                )
+                
+                # 生成实时仪表板
+                dashboard_path = self.html_generator.generate_real_time_dashboard(final_results)
+                
+                self.logger.info("✅ 股票分析完成！")
+                
+                return {
+                    'analysis_results': final_results,
+                    'summary': summary,
+                    'recommendations': recommendations,
+                    'excel_report': excel_path,
+                    'html_report': html_path,
+                    'summary_report': summary_path,
+                    'dashboard': dashboard_path
+                }
+                
+            finally:
+                # 退出baostock登录
+                self.baostock_client.logout()
             
         except Exception as e:
             self.logger.error(f"❌ 股票分析异常: {e}")
@@ -210,23 +218,29 @@ class StockAnalysisSystem:
             
             for stock_code, data in processed_data.items():
                 if 'daily' in data and not data['daily'].empty:
-                    daily_data = data['daily']
+                    daily_data = data['daily'].copy()
                     
                     # 计算均线指标
-                    ma_indicators = self.ma_indicators.calculate_all_ma_indicators(daily_data)
+                    daily_data = self.ma_indicators.calculate_ma(daily_data)
+                    daily_data = self.ma_indicators.calculate_ma_arrangement(daily_data)
+                    daily_data = self.ma_indicators.calculate_ma_slope(daily_data)
+                    daily_data = self.ma_indicators.analyze_ma_signals(daily_data)
                     
                     # 计算趋势指标
-                    trend_indicators = self.trend_indicators.calculate_all_trend_indicators(daily_data)
+                    daily_data = self.trend_indicators.calculate_macd(daily_data)
+                    daily_data = self.trend_indicators.calculate_rsi(daily_data)
+                    daily_data = self.trend_indicators.calculate_trend_strength(daily_data)
+                    daily_data = self.trend_indicators.analyze_macd_signals(daily_data)
+                    daily_data = self.trend_indicators.analyze_rsi_signals(daily_data)
                     
                     # 计算动能指标
-                    momentum_indicators = self.momentum_indicators.calculate_all_momentum_indicators(daily_data)
+                    daily_data = self.momentum_indicators.calculate_volume_ratio(daily_data)
+                    daily_data = self.momentum_indicators.calculate_turnover_rate(daily_data)
+                    daily_data = self.momentum_indicators.calculate_price_momentum(daily_data)
+                    daily_data = self.momentum_indicators.calculate_volume_price_relation(daily_data)
+                    daily_data = self.momentum_indicators.calculate_volume_signals(daily_data)
                     
-                    # 合并指标
-                    indicators_data[stock_code] = {
-                        'ma': ma_indicators,
-                        'trend': trend_indicators,
-                        'momentum': momentum_indicators
-                    }
+                    indicators_data[stock_code] = daily_data
             
             return indicators_data
             
@@ -242,49 +256,47 @@ class StockAnalysisSystem:
             for stock_code, indicators in indicators_data.items():
                 # 获取对应的数据
                 stock_data = processed_data.get(stock_code, {})
+                daily_data = stock_data.get('daily')
+                
+                if daily_data is None or daily_data.empty:
+                    self.logger.warning(f"⚠️ {stock_code} 无日线数据，跳过分析")
+                    continue
                 
                 # 基础过滤
-                basic_filter = self.mystery_logic.basic_filter(stock_data)
+                basic_passed, basic_errors = self.mystery_logic.basic_filter(indicators)
                 
-                # 三振共振分析
-                resonance_analysis = self.resonance_analyzer.analyze_three_level_resonance(
-                    stock_data, indicators
-                )
+                # 三振共振分析（使用MysteryLogic内置方法）
+                resonance_analysis = self.mystery_logic.three_resonance_analysis(indicators)
                 
                 # 主升浪分析
-                bull_wave_analysis = self.mystery_logic.analyze_bull_wave(stock_data, indicators)
+                bull_wave_analysis = self.mystery_logic.main_bull_wave_analysis(indicators)
                 
                 # 平台突破分析
-                platform_breakthrough = self.mystery_logic.analyze_platform_breakthrough(
-                    stock_data, indicators
-                )
+                platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(indicators)
                 
-                # 综合评分
-                score = self.mystery_logic.calculate_comprehensive_score(
-                    basic_filter, resonance_analysis, bull_wave_analysis, platform_breakthrough
-                )
+                # 技术细节捕捉（破五反五、筹码集中度）
+                technical_detail = self.mystery_logic.technical_detail_capture(indicators)
                 
-                # 建议操作
-                recommendation = self.mystery_logic.generate_recommendation(score, bull_wave_analysis)
+                # 综合评分与建议（复用综合分析逻辑）
+                comprehensive = self.mystery_logic.comprehensive_analysis(indicators)
                 
-                # 止损位
-                stop_loss = self.mystery_logic.calculate_stop_loss(stock_data, indicators)
-                
+                # 汇总分析结果
                 analysis_results[stock_code] = {
-                    '股票名称': stock_data.get('name', '未知'),
-                    '综合评分': score,
-                    '基础过滤': basic_filter['通过'],
-                    '基础过滤详情': basic_filter['详情'],
-                    '三振共振': resonance_analysis['三振共振'],
-                    '三振共振详情': resonance_analysis['详情'],
-                    '主升浪状态': bull_wave_analysis['状态'],
-                    '主升浪详情': bull_wave_analysis['详情'],
-                    '平台状态': platform_breakthrough['状态'],
-                    '平台详情': platform_breakthrough['详情'],
-                    '建议操作': recommendation,
-                    '止损位': stop_loss,
-                    '破五反五': self.mystery_logic.check_break_five_reverse_five(stock_data, indicators),
-                    '筹码集中度': self.mystery_logic.check_chip_concentration(stock_data, indicators)
+                    '股票代码': stock_code,
+                    '股票名称': stock_data.get('name', stock_code),
+                    '综合评分': comprehensive.get('综合评分', 0),
+                    '基础过滤': basic_passed,
+                    '基础过滤详情': basic_errors,
+                    '三振共振': resonance_analysis.get('三级共振', False),
+                    '三振共振详情': resonance_analysis.get('详情', []),
+                    '主升浪状态': bull_wave_analysis.get('主升浪状态', '未知'),
+                    '主升浪详情': bull_wave_analysis.get('详情', []),
+                    '平台状态': platform_breakthrough.get('平台状态', '未知'),
+                    '平台详情': platform_breakthrough.get('详情', []),
+                    '建议操作': comprehensive.get('建议操作', '观望'),
+                    '止损位': comprehensive.get('止损位'),
+                    '破五反五': technical_detail.get('破五反五', False),
+                    '筹码集中度': technical_detail.get('筹码集中度', '未知')
                 }
             
             return analysis_results

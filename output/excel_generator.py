@@ -75,9 +75,10 @@ class ExcelGenerator:
                     }
                     summary_data.append(row)
             
-            # 按综合评分排序
+            # 按综合评分排序（空数据时跳过）
             summary_df = pd.DataFrame(summary_data)
-            summary_df = summary_df.sort_values('综合评分', ascending=False)
+            if not summary_df.empty and '综合评分' in summary_df.columns:
+                summary_df = summary_df.sort_values('综合评分', ascending=False)
             
             # 写入Excel
             summary_df.to_excel(writer, sheet_name='汇总报告', index=False)

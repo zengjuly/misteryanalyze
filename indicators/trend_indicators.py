@@ -226,8 +226,8 @@ class TrendIndicators:
                 self.logger.warning(f"⚠️ 缺少必要列: {missing_cols}")
                 return result
             
-            # 计算趋势强度指标
-            result['趋势强度'] = 0
+            # 计算趋势强度指标（使用float类型避免int赋值溢出）
+            result['趋势强度'] = 0.0
             
             for i in range(len(result)):
                 # 计算价格与各均线的距离

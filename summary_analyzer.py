@@ -149,7 +149,7 @@ class SummaryAnalyzer:
             for stock_code, result in analysis_results.items():
                 if isinstance(result, dict) and '综合评分' in result:
                     # 评分分布
-                    score = result.get('综合评分', 0)
+                    score = result.get('综合评分', 0) or 0
                     if score >= 80:
                         details['评分分布']['80分以上'] += 1
                     elif score >= 60:
@@ -182,10 +182,10 @@ class SummaryAnalyzer:
                     if result.get('MACD_信号') == '金叉':
                         details['技术指标统计']['MACD金叉'] += 1
                     
-                    if result.get('RSI') > 70:
+                    if (result.get('RSI') or 0) > 70:
                         details['技术指标统计']['RSI超买'] += 1
                     
-                    if result.get('量比') > 1.5:
+                    if (result.get('量比') or 0) > 1.5:
                         details['技术指标统计']['成交量放大'] += 1
             
             return details
