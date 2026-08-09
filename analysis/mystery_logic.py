@@ -61,16 +61,16 @@ class MysteryLogic:
                     errors.append("均线未呈现多头顺次排列")
                     passed = False
             else:
-                # 手动检查均线排列
+                # 手动检查均线排列（MA5 > MA10 > MA20 > MA60 相邻比较）
                 ma_check = True
-                for i, period in enumerate([5, 10, 20, 60]):
-                    if i < 3:  # 检查相邻均线
-                        ma_col1 = f'MA{period}'
-                        ma_col2 = f'MA{period+5}'
-                        if (pd.notna(latest_data[ma_col1]) and pd.notna(latest_data[ma_col2]) and
-                            latest_data[ma_col1] <= latest_data[ma_col2]):
-                            ma_check = False
-                            break
+                ma_periods = [5, 10, 20, 60]
+                for i in range(len(ma_periods) - 1):
+                    ma_col1 = f'MA{ma_periods[i]}'
+                    ma_col2 = f'MA{ma_periods[i+1]}'
+                    if (pd.notna(latest_data[ma_col1]) and pd.notna(latest_data[ma_col2]) and
+                        latest_data[ma_col1] <= latest_data[ma_col2]):
+                        ma_check = False
+                        break
                 
                 if not ma_check:
                     errors.append("均线未呈现多头顺次排列")
