@@ -6,6 +6,15 @@ from datetime import datetime
 import logging
 from typing import Dict, List, Optional, Any
 import os
+import sys
+
+sys_path = os.path.dirname(os.path.abspath(__file__))
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
+try:
+    from utils import build_report_filename
+except ImportError:
+    from utils import build_report_filename
 
 class SummaryAnalyzer:
     """汇总分析器"""
@@ -316,17 +325,26 @@ class SummaryAnalyzer:
             self.logger.error(f"❌ 生成投资建议异常: {e}")
             return {'错误': f"生成投资建议异常: {e}"}
     
-    def export_summary_report(self, summary: Dict[str, Any], recommendations: Dict[str, Any]) -> str:
+    def export_summary_report(self, summary: Dict[str, Any], recommendations: Dict[str, Any],
+                              analysis_results: Dict[str, Any] = None) -> str:
         """
         导出汇总报告
         :param summary: 汇总结果
         :param recommendations: 投资建议
+        :param analysis_results: 分析结果（可选，用于文件名命名）
         :return: 报告文件路径
         """
         try:
-            # 创建汇总报告
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"汇总分析报告_{timestamp}.txt"
+            # 创建汇总报告（文件名规则：单只含股票名称，多只加"每日"）
+            if analysis_results is not None:
+                filename = build_report_filename(analysis_results, "汇总分析报告", ".txt")
+            else:
+                # 无分析结果时根据股票总数判断
+                total = summary.get('分析股票总数', 0)
+                if total == 1:
+                    filename = f"汇总分析报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                else:
+                    filename = f"每日汇总分析报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             filepath = os.path.join(self.output_dir, filename)
             
             with open(filepath, 'w', encoding='utf-8') as f:

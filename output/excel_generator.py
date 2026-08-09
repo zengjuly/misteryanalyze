@@ -6,6 +6,15 @@ from datetime import datetime
 import logging
 from typing import Dict, List, Optional, Any
 import os
+import sys
+
+sys_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
+try:
+    from utils import build_report_filename
+except ImportError:
+    from ..utils import build_report_filename
 
 class ExcelGenerator:
     """Excel报告生成器"""
@@ -26,9 +35,8 @@ class ExcelGenerator:
         :return: 生成的Excel文件路径
         """
         try:
-            # 创建Excel写入器
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"股票分析报告_{timestamp}.xlsx"
+            # 创建Excel写入器（文件名规则：单只含股票名称，多只加"每日"）
+            filename = build_report_filename(analysis_results, "股票分析报告", ".xlsx")
             filepath = os.path.join(self.output_dir, filename)
             
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
@@ -406,9 +414,8 @@ class ExcelGenerator:
         :return: 生成的Excel文件路径
         """
         try:
-            # 创建Excel写入器
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"每日汇总报告_{timestamp}.xlsx"
+            # 创建Excel写入器（每日汇总：单只含名称，多只加"每日"）
+            filename = build_report_filename(analysis_results, "汇总报告", ".xlsx")
             filepath = os.path.join(self.output_dir, filename)
             
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:

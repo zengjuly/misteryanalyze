@@ -7,6 +7,15 @@ import logging
 from typing import Dict, List, Optional, Any
 import os
 import json
+import sys
+
+sys_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
+try:
+    from utils import build_report_filename
+except ImportError:
+    from ..utils import build_report_filename
 
 class HTMLGenerator:
     """HTML可视化报告生成器"""
@@ -215,9 +224,8 @@ class HTMLGenerator:
         :return: 生成的HTML文件路径
         """
         try:
-            # 创建HTML文件
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"股票分析报告_{timestamp}.html"
+            # 创建HTML文件（文件名规则：单只含股票名称，多只加"每日"）
+            filename = build_report_filename(analysis_results, "股票分析报告", ".html")
             filepath = os.path.join(self.output_dir, filename)
             
             # 生成HTML内容
@@ -560,8 +568,8 @@ class HTMLGenerator:
         :return: 生成的HTML文件路径
         """
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"实时仪表板_{timestamp}.html"
+            # 文件名规则：单只含股票名称，多只加"每日"
+            filename = build_report_filename(analysis_results, "实时仪表板", ".html")
             filepath = os.path.join(self.output_dir, filename)
             
             # 生成实时仪表板HTML

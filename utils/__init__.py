@@ -51,3 +51,31 @@ def safe_division(numerator: float, denominator: float, default: float = 0.0) ->
     if denominator == 0:
         return default
     return numerator / denominator
+
+def build_report_filename(analysis_results: dict, report_type: str = "股票分析报告",
+                          ext: str = ".xlsx") -> str:
+    """
+    构建报告文件名
+    规则：
+    - 单只股票：{report_type}_{股票名称}_{时间戳}.{ext}
+    - 多只股票（每日分析）：每日{report_type}_{时间戳}.{ext}
+    :param analysis_results: 分析结果字典
+    :param report_type: 报告类型前缀（如"股票分析报告"）
+    :param ext: 文件扩展名（含点）
+    :return: 文件名
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if len(analysis_results) == 1:
+        # 单只股票：取股票名称
+        stock_name = "个股"
+        for result in analysis_results.values():
+            if isinstance(result, dict):
+                name = result.get('股票名称', '')
+                if name and name != '未知':
+                    stock_name = str(name)
+                break
+        return f"{report_type}_{stock_name}_{timestamp}{ext}"
+    else:
+        # 多只股票：每日分析
+        return f"每日{report_type}_{timestamp}{ext}"

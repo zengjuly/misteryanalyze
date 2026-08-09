@@ -219,7 +219,7 @@ class StockAnalysisSystem:
                     final_results, processed_data
                 )
                 summary_path = self.summary_analyzer.export_summary_report(
-                    summary, recommendations
+                    summary, recommendations, final_results
                 )
                 
                 # 生成实时仪表板
