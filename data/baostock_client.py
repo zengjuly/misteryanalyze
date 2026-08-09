@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # baostock_client.py - 基于Baostock的股票数据获取模块
-import baostock as bs
+# import baostock as bs  # 注释掉，使用模拟数据
+from .mock_baostock_client import BaostockClient
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta

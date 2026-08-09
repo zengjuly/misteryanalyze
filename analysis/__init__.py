@@ -1,6 +1,6 @@
 # analysis package
-from .mystery_logic import MysteryLogic
-from .resonance_analyzer import ResonanceAnalyzer
-from .pattern_recognition import PatternRecognition
+from analysis.mystery_logic import MysteryLogic
+from analysis.resonance_analyzer import ResonanceAnalyzer
+from analysis.pattern_recognition import PatternRecognition
 
 __all__ = ['MysteryLogic', 'ResonanceAnalyzer', 'PatternRecognition']
