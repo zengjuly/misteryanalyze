@@ -211,7 +211,7 @@ scheduler:
   # 每日分析
   daily_analysis:
     enabled: true
-    time: "15:30"  # 交易时间开始
+    time: "9:30"  # 交易时间开始
     timezone: "Asia/Shanghai"
     
   # 实时监控
@@ -222,7 +222,7 @@ scheduler:
   # 定时报告
   scheduled_reports:
     enabled: false
-    daily_time: "18:00"
+    daily_time: "15:30"
     weekly_day: 5  # 周五
     monthly_day: 1  # 每月1日
 
