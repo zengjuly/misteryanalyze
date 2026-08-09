@@ -182,6 +182,7 @@ class MysteryLogic:
                 '持股状态': False,
                 '空中加油': False,
                 'MA5斜率': 0,
+                '判定依据': [],  # 状态判定依据（供报告展示）
                 '详情': []
             }
             
@@ -206,12 +207,16 @@ class MysteryLogic:
                     # 判断斜率强度
                     if slope > 0.5:
                         result['详情'].append("MA5斜率强劲，处于加速段")
+                        result['判定依据'].append(f"MA5斜率{slope:.2f}>0.5，加速上行")
                     elif slope > 0:
                         result['详情'].append("MA5斜率温和，处于上升段")
+                        result['判定依据'].append(f"MA5斜率{slope:.2f}>0，温和上行")
                     else:
                         result['详情'].append("MA5斜率平缓或下降")
+                        result['判定依据'].append(f"MA5斜率{slope:.2f}<=0，未上行")
             
             # 2. 持股状态判断：股价沿MA5上涨，不破MA5则标记为"主升持股期"
+            above_ma5_count = 0
             if (pd.notna(latest_data['收盘价']) and pd.notna(latest_data['MA5']) and
                 latest_data['收盘价'] > latest_data['MA5']):
                 
@@ -226,8 +231,10 @@ class MysteryLogic:
                     result['持股状态'] = True
                     result['主升浪状态'] = '主升持股期'
                     result['详情'].append("✅ 主升持股期：股价沿MA5上涨")
+                    result['判定依据'].append(f"近5日{above_ma5_count}日收盘价>MA5，站稳MA5")
             
             # 3. 空中加油识别：前期强势上涨后，缩量横盘整理（不破MA20），且筹码峰在低位不动
+            amplitude = None
             if (pd.notna(latest_data['收盘价']) and pd.notna(latest_data['MA20']) and
                 latest_data['收盘价'] > latest_data['MA20']):
                 
@@ -235,15 +242,21 @@ class MysteryLogic:
                 recent_20_days = data.tail(20)
                 if len(recent_20_days) >= 10:
                     # 计算振幅
-                    amplitude = (recent_20_days['最高价'].max() - recent_20_days['最低价'].min()) / recent_20_days['收盘价'].mean() * 100
+                    high_20 = recent_20_days['最高价'].max()
+                    low_20 = recent_20_days['最低价'].min()
+                    avg_20 = recent_20_days['收盘价'].mean()
+                    if pd.notna(high_20) and pd.notna(low_20) and pd.notna(avg_20) and avg_20 > 0:
+                        amplitude = (high_20 - low_20) / avg_20 * 100
                     
-                    if amplitude < 15:  # 振幅小于15%
+                    if amplitude is not None and amplitude < 15:  # 振幅小于15%
                         # 检查成交量是否缩量
                         if '量比' in data.columns and pd.notna(latest_data['量比']):
                             if latest_data['量比'] < 1.0:  # 量比小于1
                                 result['空中加油'] = True
                                 result['主升浪状态'] = '空中加油'
                                 result['详情'].append("✅ 空中加油形态：缩量横盘整理")
+                                result['判定依据'].append(
+                                    f"20日振幅{amplitude:.1f}%<15%且量比{latest_data['量比']:.2f}<1，缩量横盘")
             
             # 4. 综合判断
             if result['持股状态']:
@@ -252,8 +265,14 @@ class MysteryLogic:
                 result['主升浪状态'] = '空中加油'
             elif result['MA5斜率'] > 0:
                 result['主升浪状态'] = '强势上升'
+                if not result['判定依据']:
+                    result['判定依据'].append("MA5斜率>0，处于上升趋势")
             else:
                 result['主升浪状态'] = '观望'
+                result['判定依据'].append("MA5斜率<=0且未站稳MA5，趋势不明")
+            
+            # 补充状态判定依据汇总
+            result['判定依据'].insert(0, f"判定结果: {result['主升浪状态']}")
             
             self.logger.info(f"📈 主升浪分析: {result['主升浪状态']}, {result['详情']}")
             return result
@@ -273,6 +292,7 @@ class MysteryLogic:
                 '平台状态': '未知',
                 '突破信号': False,
                 '买横信号': False,
+                '平台范围': None,  # 平台箱体区间
                 '详情': []
             }
             
@@ -287,11 +307,23 @@ class MysteryLogic:
             # 获取最近20天数据
             recent_20_days = data.tail(20)
             
+            # 计算平台箱体范围（近20日最高价~最低价）
+            platform_high = recent_20_days['最高价'].max()
+            platform_low = recent_20_days['最低价'].min()
+            if pd.notna(platform_high) and pd.notna(platform_low):
+                result['平台范围'] = {
+                    '上沿': round(float(platform_high), 2),
+                    '下沿': round(float(platform_low), 2),
+                    '周期': 20
+                }
+                result['详情'].append(
+                    f"平台箱体(近20日): {platform_low:.2f} ~ {platform_high:.2f}")
+            
             # 1. 横盘识别：识别股价在20日内振幅小于15%的"长期横盘"区间
             if len(recent_20_days) >= 10:
                 # 计算振幅
-                high_price = recent_20_days['最高价'].max()
-                low_price = recent_20_days['最低价'].min()
+                high_price = platform_high
+                low_price = platform_low
                 avg_price = recent_20_days['收盘价'].mean()
                 
                 if pd.notna(high_price) and pd.notna(low_price) and pd.notna(avg_price) and avg_price > 0:
@@ -309,7 +341,9 @@ class MysteryLogic:
                             # 2. 突破判断：放量突破箱体上沿（成交量需高于前均量1.5倍），MACD零轴上金叉
                             if '量比' in data.columns and pd.notna(latest_data['量比']):
                                 if latest_data['量比'] > 1.5:
-                                    result['详情'].append("放量突破：量比>1.5")
+                                    result['详情'].append(
+                                        f"放量突破：量比{latest_data['量比']:.2f}>1.5, "
+                                        f"突破箱体上沿{platform_high:.2f}")
                                     
                                     # 检查MACD金叉
                                     if ('MACD_信号' in data.columns and pd.notna(latest_data['MACD_信号']) and
@@ -322,7 +356,6 @@ class MysteryLogic:
                             # 3. 买横信号：横盘期间逢低买入
                             if not result['突破信号']:
                                 # 检查是否接近平台下沿
-                                platform_low = recent_20_days['最低价'].min()
                                 current_price = latest_data['收盘价']
                                 
                                 if pd.notna(platform_low) and pd.notna(current_price):
@@ -331,7 +364,8 @@ class MysteryLogic:
                                     if distance_from_low < 5:  # 距离平台下沿不到5%
                                         result['买横信号'] = True
                                         result['平台状态'] = '买横机会'
-                                        result['详情'].append("✅ 买横信号：接近平台下沿")
+                                        result['详情'].append(
+                                            f"✅ 买横信号：距平台下沿{platform_low:.2f}仅{distance_from_low:.1f}%")
             
             self.logger.info(f"📊 平台突破分析: {result['平台状态']}, {result['详情']}")
             return result
@@ -365,6 +399,7 @@ class MysteryLogic:
                 'RSI>50继续走强': False,
                 '主力资金连续流入': False,
                 '行业板块同步走强': False,
+                '平台范围': None,  # 近20日箱体区间（上沿/下沿）
                 '详情': [],
             }
             
@@ -407,12 +442,24 @@ class MysteryLogic:
             # 3. 股价突破平台：收盘价创近20日新高
             if len(data) >= 21:
                 recent_20_high = data['最高价'].tail(20).max()
+                recent_20_low = data['最低价'].tail(20).min()
+                # 记录平台箱体范围（近20日）
+                if pd.notna(recent_20_high) and pd.notna(recent_20_low):
+                    checklist['平台范围'] = {
+                        '上沿': round(float(recent_20_high), 2),
+                        '下沿': round(float(recent_20_low), 2),
+                        '周期': 20
+                    }
                 if pd.notna(recent_20_high) and pd.notna(latest['收盘价']):
                     if latest['收盘价'] >= recent_20_high:
                         checklist['股价突破平台'] = True
-                        checklist['详情'].append(f"收盘价{latest['收盘价']:.2f}突破近20日高点{recent_20_high:.2f}")
+                        checklist['详情'].append(
+                            f"收盘价{latest['收盘价']:.2f}突破近20日箱体上沿{recent_20_high:.2f}"
+                            f"(箱体{recent_20_low:.2f}-{recent_20_high:.2f})")
                     else:
-                        checklist['详情'].append(f"未突破近20日高点{recent_20_high:.2f}")
+                        checklist['详情'].append(
+                            f"未突破近20日箱体上沿{recent_20_high:.2f}"
+                            f"(箱体{recent_20_low:.2f}-{recent_20_high:.2f})")
             else:
                 checklist['详情'].append("数据不足20日")
             
@@ -540,6 +587,8 @@ class MysteryLogic:
             result = {
                 '破五反五': False,
                 '筹码集中度': '未知',
+                '筹码集中度数值': None,  # 平均换手率数值
+                '筹码趋势': '未知',
                 '详情': []
             }
             
@@ -568,35 +617,42 @@ class MysteryLogic:
                         result['破五反五'] = True
                         result['详情'].append("✅ 破五反五：洗盘信号确认")
             
-            # 2. 筹码集中度：模拟计算筹码分布（或通过换手率估算），识别筹码由分散转向集中的"筹码归编"过程
+            # 2. 筹码集中度：通过换手率估算筹码分布，识别"筹码归编"过程
             if '换手率' in data.columns:
                 # 计算最近20天的平均换手率
                 recent_20_days = data.tail(20)
                 avg_turnover = recent_20_days['换手率'].mean()
                 
                 if pd.notna(avg_turnover):
+                    result['筹码集中度数值'] = round(float(avg_turnover), 2)
                     # 简化的筹码集中度判断
                     if avg_turnover < 2:
                         result['筹码集中度'] = '高度集中'
-                        result['详情'].append("筹码高度集中")
+                        result['详情'].append(f"筹码高度集中（近20日平均换手率{avg_turnover:.2f}%<2%）")
                     elif avg_turnover < 5:
                         result['筹码集中度'] = '相对集中'
-                        result['详情'].append("筹码相对集中")
+                        result['详情'].append(f"筹码相对集中（近20日平均换手率{avg_turnover:.2f}%，2-5%）")
                     elif avg_turnover < 10:
                         result['筹码集中度'] = '分散'
-                        result['详情'].append("筹码分散")
+                        result['详情'].append(f"筹码分散（近20日平均换手率{avg_turnover:.2f}%，5-10%）")
                     else:
                         result['筹码集中度'] = '高度分散'
-                        result['详情'].append("筹码高度分散")
+                        result['详情'].append(f"筹码高度分散（近20日平均换手率{avg_turnover:.2f}%>10%）")
                 
                 # 检查筹码集中度变化趋势
                 if len(recent_20_days) >= 10:
                     recent_10_turnover = recent_20_days.tail(10)['换手率'].mean()
                     early_10_turnover = recent_20_days.head(10)['换手率'].mean()
                     
-                    if (pd.notna(recent_10_turnover) and pd.notna(early_10_turnover) and
-                        recent_10_turnover < early_10_turnover):
-                        result['详情'].append("筹码呈集中趋势")
+                    if (pd.notna(recent_10_turnover) and pd.notna(early_10_turnover)):
+                        if recent_10_turnover < early_10_turnover:
+                            result['筹码趋势'] = '趋于集中'
+                            result['详情'].append(
+                                f"筹码呈集中趋势（近10日换手{recent_10_turnover:.2f}%<前10日{early_10_turnover:.2f}%）")
+                        else:
+                            result['筹码趋势'] = '趋于分散'
+                            result['详情'].append(
+                                f"筹码呈分散趋势（近10日换手{recent_10_turnover:.2f}%>=前10日{early_10_turnover:.2f}%）")
             
             self.logger.info(f"🔍 技术细节分析: 破五反五={result['破五反五']}, 筹码集中度={result['筹码集中度']}")
             return result

@@ -171,9 +171,11 @@ class ExcelGenerator:
                     # 基础过滤结果
                     detail_data.append(['基础过滤', '', ''])
                     detail_data.append(['是否通过', '✅' if result.get('基础过滤', False) else '❌', ''])
-                    if '详情' in result and isinstance(result['详情'], list):
-                        for i, detail in enumerate(result['详情'][:5]):  # 只显示前5个详情
-                            detail_data.append([f'详情{i+1}', detail, ''])
+                    if not result.get('基础过滤', False):
+                        # 排除原因逐条列出
+                        reasons = result.get('基础过滤排除原因') or result.get('基础过滤详情') or []
+                        for i, reason in enumerate(reasons, 1):
+                            detail_data.append([f'排除原因{i}', reason, ''])
                     detail_data.append(['', '', ''])
                     
                     # 三振共振分析
@@ -203,6 +205,8 @@ class ExcelGenerator:
                     # 主升浪分析
                     detail_data.append(['主升浪分析', '', ''])
                     detail_data.append(['主升浪状态', result.get('主升浪状态', '未知'), ''])
+                    for i, basis in enumerate((result.get('主升浪判定依据') or [])[:5], 1):
+                        detail_data.append([f'判定依据{i}', basis, ''])
                     detail_data.append(['主升浪指标满足', f"{result.get('主升浪满足数量', 0)}/8", ''])
                     detail_data.append(['主升浪综合判断', result.get('主升浪综合判断', '未知'), ''])
                     if '主升浪' in result and isinstance(result['主升浪'], dict):
@@ -225,6 +229,10 @@ class ExcelGenerator:
                     # 平台突破分析
                     detail_data.append(['平台突破分析', '', ''])
                     detail_data.append(['平台状态', result.get('平台状态', '未知'), ''])
+                    pr = result.get('平台范围')
+                    if pr:
+                        detail_data.append(['平台箱体(近20日)', 
+                                           f"下沿 {pr.get('下沿', '-')} ~ 上沿 {pr.get('上沿', '-')}", ''])
                     detail_data.append(['突破信号', '✅' if result.get('突破信号', False) else '❌', ''])
                     detail_data.append(['买横信号', '✅' if result.get('买横信号', False) else '❌', ''])
                     detail_data.append(['', '', ''])
@@ -232,7 +240,10 @@ class ExcelGenerator:
                     # 技术细节
                     detail_data.append(['技术细节', '', ''])
                     detail_data.append(['破五反五', '✅' if result.get('破五反五', False) else '❌', ''])
-                    detail_data.append(['筹码集中度', result.get('筹码集中度', '未知'), ''])
+                    chip_val = result.get('筹码集中度数值')
+                    chip_str = f"（近20日均换手率 {chip_val}%）" if chip_val is not None else ""
+                    detail_data.append(['筹码集中度', f"{result.get('筹码集中度', '未知')}{chip_str}", ''])
+                    detail_data.append(['筹码趋势', result.get('筹码趋势', '未知'), ''])
                     detail_data.append(['', '', ''])
                     
                     # 转换为DataFrame

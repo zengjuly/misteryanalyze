@@ -543,13 +543,19 @@ class HTMLGenerator:
                         <li>主力资金连续流入: {'✅' if result.get('主升浪指标对比', {}).get('主力资金连续流入', False) else '❌'}</li>
                         <li>行业板块同步走强: {'✅' if result.get('主升浪指标对比', {}).get('行业板块同步走强', False) else '❌'}</li>
                     </ul>
+                    <h4>主升浪状态判定</h4>
+                    <ul>
+                        <li>主升浪状态: {result.get('主升浪状态', '未知')}</li>
+                        {''.join(f'<li>依据{i}: {b}</li>' for i, b in enumerate((result.get('主升浪判定依据') or [])[:5], 1))}
+                        {f'<li>平台箱体(近20日): 下沿 {result.get("平台范围", {}).get("下沿", "-")} ~ 上沿 {result.get("平台范围", {}).get("上沿", "-")}</li>' if result.get('平台范围') else ''}
+                    </ul>
                     <h4>分析详情</h4>
                     <ul>
                         <li>基础过滤: {'✅ 通过' if result.get('基础过滤', False) else '❌ 不通过'}</li>
-                        <li>主升浪状态: {result.get('主升浪状态', '未知')}</li>
+                        {''.join(f'<li style="color:#c0392b;">排除原因{i}: {r}</li>' for i, r in enumerate((result.get('基础过滤排除原因') or result.get('基础过滤详情') or [])[:5], 1)) if not result.get('基础过滤', False) else ''}
                         <li>平台状态: {result.get('平台状态', '未知')}</li>
                         <li>破五反五: {'✅' if result.get('破五反五', False) else '❌'}</li>
-                        <li>筹码集中度: {result.get('筹码集中度', '未知')}</li>
+                        <li>筹码集中度: {result.get('筹码集中度', '未知')}{f'（近20日均换手率 {result.get("筹码集中度数值")}%）' if result.get('筹码集中度数值') is not None else ''} · 趋势: {result.get('筹码趋势', '未知')}</li>
                     </ul>
                 </div>
             </div>

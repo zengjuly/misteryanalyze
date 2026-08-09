@@ -621,19 +621,24 @@ class StockAnalysisSystem:
                     '综合评分': comprehensive.get('综合评分', 0),
                     '基础过滤': basic_passed,
                     '基础过滤详情': basic_errors,
+                    '基础过滤排除原因': basic_errors if not basic_passed else [],  # 排除原因（供报告明确展示）
                     '三振共振': resonance_analysis.get('三级共振', False),
                     '三振共振详情': resonance_analysis.get('详情', []),
                     '个股趋势': resonance_analysis.get('个股趋势', False),
                     '行业趋势': resonance_analysis.get('行业趋势', False),
                     '大盘趋势': resonance_analysis.get('大盘趋势', False),
                     '主升浪状态': bull_wave_analysis.get('主升浪状态', '未知'),
+                    '主升浪判定依据': bull_wave_analysis.get('判定依据', []),
                     '主升浪详情': bull_wave_analysis.get('详情', []),
                     '平台状态': platform_breakthrough.get('平台状态', '未知'),
+                    '平台范围': platform_breakthrough.get('平台范围'),
                     '平台详情': platform_breakthrough.get('详情', []),
                     '建议操作': comprehensive.get('建议操作', '观望'),
                     '止损位': comprehensive.get('止损位'),
                     '破五反五': technical_detail.get('破五反五', False),
                     '筹码集中度': technical_detail.get('筹码集中度', '未知'),
+                    '筹码集中度数值': technical_detail.get('筹码集中度数值'),
+                    '筹码趋势': technical_detail.get('筹码趋势', '未知'),
                     # 所属板块与行业趋势
                     '所属板块': industry,
                     '板块评级': industry_rating,
@@ -795,6 +800,10 @@ class StockAnalysisSystem:
                 print(f"💡 建议操作: {analysis.get('建议操作', '未知')}")
                 print(f"🛡️ 止损位: {analysis.get('止损位', '无')}")
                 print(f"🔄 基础过滤: {'✅ 通过' if analysis.get('基础过滤', False) else '❌ 不通过'}")
+                if not analysis.get('基础过滤', False):
+                    print("   🚫 排除原因:")
+                    for reason in (analysis.get('基础过滤排除原因') or analysis.get('基础过滤详情') or []):
+                        print(f"      - {reason}")
                 
                 print("\n🎯 三振共振:")
                 print(f"📈 个股趋势: {'✅ 走强' if analysis.get('个股趋势', False) else '❌ 走弱'}")
@@ -813,11 +822,19 @@ class StockAnalysisSystem:
                 print(f"🔗 多周期共振: {'✅' if analysis.get('多周期共振', False) else '❌'}")
                 
                 print(f"🚀 主升浪状态: {analysis.get('主升浪状态', '未知')}")
+                for basis in analysis.get('主升浪判定依据', []) or []:
+                    print(f"   ↳ {basis}")
                 print(f"💪 平台状态: {analysis.get('平台状态', '未知')}")
+                pr = analysis.get('平台范围')
+                if pr:
+                    print(f"   📦 平台箱体(近20日): 下沿 {pr.get('下沿', '-')} ~ 上沿 {pr.get('上沿', '-')}")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")
-                print(f"🎲 筹码集中度: {analysis.get('筹码集中度', '未知')}")
+                chip_val = analysis.get('筹码集中度数值')
+                chip_str = f"（近20日均换手率 {chip_val}%）" if chip_val is not None else ""
+                print(f"🎲 筹码集中度: {analysis.get('筹码集中度', '未知')}{chip_str} "
+                      f"趋势: {analysis.get('筹码趋势', '未知')}")
                 
                 print("\n📋 主升浪8项指标对比表:")
                 checklist = analysis.get('主升浪指标对比', {})
