@@ -7,6 +7,8 @@ import argparse
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -155,10 +157,23 @@ class StockAnalysisSystem:
                 self.logger.info("📈 计算技术指标...")
                 indicators_data = self._calculate_all_indicators(processed_data)
                 
+                # 指标回填：将带指标的数据写回processed_data，供报告生成器使用
+                for code, df_with_indicators in indicators_data.items():
+                    if code in processed_data and 'daily' in processed_data[code]:
+                        processed_data[code]['daily'] = df_with_indicators
+                
+                # 获取行业板块映射（code -> 所属板块）
+                self.logger.info("🏢 获取行业板块信息...")
+                industry_map = self._build_industry_map(industry_data)
+                
+                # 获取财务数据（ROE/EPS/PE/PB/股息率）
+                self.logger.info("💹 获取财务数据...")
+                financial_data_map = self._get_all_financial_data(processed_data)
+                
                 # Mystery理论分析
                 self.logger.info("🎯 Mystery理论分析...")
                 analysis_results = self._perform_mystery_analysis(
-                    indicators_data, processed_data
+                    indicators_data, processed_data, industry_map, financial_data_map
                 )
                 
                 # 形态识别
@@ -248,10 +263,52 @@ class StockAnalysisSystem:
             self.logger.error(f"❌ 计算技术指标异常: {e}")
             raise
     
-    def _perform_mystery_analysis(self, indicators_data: Dict, processed_data: Dict) -> Dict:
+    def _build_industry_map(self, industry_data: pd.DataFrame) -> Dict:
+        """
+        构建股票代码到所属板块的映射
+        :param industry_data: baostock行业分类数据（含code/industry列）
+        :return: {股票代码: 所属板块}
+        """
+        industry_map = {}
+        try:
+            if industry_data is not None and not industry_data.empty:
+                for _, row in industry_data.iterrows():
+                    code = row.get('code', '')
+                    industry = row.get('industry', '')
+                    if code and industry:
+                        industry_map[code] = industry
+                self.logger.info(f"🏢 构建行业映射: {len(industry_map)} 只股票")
+        except Exception as e:
+            self.logger.warning(f"⚠️ 构建行业映射异常: {e}")
+        return industry_map
+    
+    def _get_all_financial_data(self, processed_data: Dict) -> Dict:
+        """
+        获取所有股票的基础财务数据
+        :param processed_data: 处理后的股票数据
+        :return: {股票代码: 财务数据字典}
+        """
+        financial_map = {}
+        try:
+            for stock_code, data in processed_data.items():
+                daily_data = data.get('daily')
+                current_price = None
+                if daily_data is not None and not daily_data.empty:
+                    current_price = float(daily_data.iloc[-1].get('收盘价', 0) or 0)
+                
+                financial = self.baostock_client.get_financial_data(stock_code, current_price)
+                financial_map[stock_code] = financial
+        except Exception as e:
+            self.logger.error(f"❌ 获取财务数据异常: {e}")
+        return financial_map
+    
+    def _perform_mystery_analysis(self, indicators_data: Dict, processed_data: Dict,
+                                 industry_map: Dict = None, financial_data_map: Dict = None) -> Dict:
         """执行Mystery理论分析"""
         try:
             analysis_results = {}
+            industry_map = industry_map or {}
+            financial_data_map = financial_data_map or {}
             
             for stock_code, indicators in indicators_data.items():
                 # 获取对应的数据
@@ -280,6 +337,20 @@ class StockAnalysisSystem:
                 # 综合评分与建议（复用综合分析逻辑）
                 comprehensive = self.mystery_logic.comprehensive_analysis(indicators)
                 
+                # 提取最新交易日的技术指标值（供报告展示）
+                latest = indicators.iloc[-1]
+                
+                # 所属板块（通过标准化代码匹配行业映射）
+                normalized_code = self.baostock_client.normalize_stock_code(stock_code)
+                industry = industry_map.get(normalized_code, '未知')
+                # 兼容用户输入的原始格式（如 sh600150 vs sh.600150）
+                if industry == '未知' and '.' not in stock_code:
+                    industry = industry_map.get(
+                        f"{stock_code[:2]}.{stock_code[2:]}", '未知')
+                
+                # 财务数据
+                financial = financial_data_map.get(stock_code, {})
+                
                 # 汇总分析结果
                 analysis_results[stock_code] = {
                     '股票代码': stock_code,
@@ -296,7 +367,34 @@ class StockAnalysisSystem:
                     '建议操作': comprehensive.get('建议操作', '观望'),
                     '止损位': comprehensive.get('止损位'),
                     '破五反五': technical_detail.get('破五反五', False),
-                    '筹码集中度': technical_detail.get('筹码集中度', '未知')
+                    '筹码集中度': technical_detail.get('筹码集中度', '未知'),
+                    # 所属板块
+                    '所属板块': industry,
+                    # 技术指标值（最新交易日）
+                    '最新价': latest.get('收盘价', 0),
+                    'MA5': latest.get('MA5', 0),
+                    'MA10': latest.get('MA10', 0),
+                    'MA20': latest.get('MA20', 0),
+                    'MA60': latest.get('MA60', 0),
+                    'MA250': latest.get('MA250', 0),
+                    '量比': latest.get('量比', 0),
+                    'RSI': latest.get('RSI', 0),
+                    'MACD': latest.get('MACD', 0),
+                    'MACD_Signal': latest.get('MACD_Signal', 0),
+                    'MACD_信号': latest.get('MACD_信号', 0),
+                    '动能状态': latest.get('动能状态', '未知'),
+                    '量价配合度': latest.get('量价配合度', 0),
+                    '均线排列': latest.get('均线排列', 0),
+                    '换手率': latest.get('换手率', 0),
+                    '成交量': latest.get('成交量', 0),
+                    # 财务指标
+                    'ROE': financial.get('ROE'),
+                    'EPS': financial.get('EPS'),
+                    'PE': financial.get('PE'),
+                    'PB': financial.get('PB'),
+                    '股息率': financial.get('股息率'),
+                    '每股股息': financial.get('每股股息'),
+                    '财务报告期': financial.get('报告期'),
                 }
             
             return analysis_results
@@ -408,6 +506,7 @@ class StockAnalysisSystem:
                 print(f"📊 {stock_code} 详细分析结果")
                 print("=" * 60)
                 print(f"📈 股票名称: {analysis.get('股票名称', '未知')}")
+                print(f"🏢 所属板块: {analysis.get('所属板块', '未知')}")
                 print(f"🎯 综合评分: {analysis.get('综合评分', 0):.1f}分")
                 print(f"💡 建议操作: {analysis.get('建议操作', '未知')}")
                 print(f"🛡️ 止损位: {analysis.get('止损位', '无')}")
@@ -419,6 +518,15 @@ class StockAnalysisSystem:
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")
                 print(f"🎲 筹码集中度: {analysis.get('筹码集中度', '未知')}")
+                
+                print("\n📈 技术指标（最新交易日）:")
+                print(f"💰 最新价: {analysis.get('最新价', 0):.2f}  换手率: {analysis.get('换手率', 0):.2f}%  量比: {analysis.get('量比', 0):.2f}")
+                print(f"📊 MA5: {analysis.get('MA5', 0):.2f}  MA10: {analysis.get('MA10', 0):.2f}  MA20: {analysis.get('MA20', 0):.2f}  MA60: {analysis.get('MA60', 0):.2f}  MA250: {analysis.get('MA250', 0):.2f}")
+                print(f"📈 RSI: {analysis.get('RSI', 0):.2f}  MACD: {analysis.get('MACD', 0):.2f}  信号: {analysis.get('MACD_信号', '未知')}")
+                print(f"⚡ 动能状态: {analysis.get('动能状态', '未知')}  量价配合度: {analysis.get('量价配合度', 0):.2f}")
+                
+                print("\n💹 财务指标:")
+                print(f"🏦 ROE: {analysis.get('ROE', '-')}  EPS: {analysis.get('EPS', '-')}  PE: {analysis.get('PE', '-')}  PB: {analysis.get('PB', '-')}  股息率: {analysis.get('股息率', '-')}%  (报告期: {analysis.get('财务报告期', '-')})")
                 
                 print("\n📋 详细分析:")
                 if '基础过滤详情' in analysis:

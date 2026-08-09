@@ -262,41 +262,75 @@ class BaostockClient:
             self.logger.error(f"❌ 获取 {stock_code} 月线数据异常: {e}")
             return pd.DataFrame()
     
-    def get_financial_data(self, stock_code: str) -> Dict:
-        """获取财务数据"""
+    def get_financial_data(self, stock_code: str, current_price: float = None) -> Dict:
+        """
+        获取财务数据（ROE/EPS/PE/PB/股息率）
+        :param stock_code: 股票代码
+        :param current_price: 当前股价（用于计算PE/PB/股息率）
+        :return: 财务数据字典
+        """
         try:
-            # 获取盈利能力指标
-            profit_data = bs.query_profit_data(code=stock_code, year=2024, quarter=3)
-            if profit_data.error_code == '0':
-                profit_df = profit_data.get_data()
-            else:
-                profit_df = pd.DataFrame()
+            # 标准化股票代码
+            stock_code = self.normalize_stock_code(stock_code)
             
-            # 获取估值指标
-            valuation_data = bs.query_valuation_data(code=stock_code, year=2024, quarter=3)
-            if valuation_data.error_code == '0':
-                valuation_df = valuation_data.get_data()
-            else:
-                valuation_df = pd.DataFrame()
+            financial_data = {
+                'ROE': None, 'EPS': None, 'PE': None, 'PB': None,
+                '股息率': None, '每股股息': None, '报告期': None
+            }
             
-            # 获取成长指标
-            growth_data = bs.query_growth_data(code=stock_code, year=2024, quarter=3)
-            if growth_data.error_code == '0':
-                growth_df = growth_data.get_data()
-            else:
-                growth_df = pd.DataFrame()
+            # 获取盈利能力指标（自动查询最新报告期）
+            profit_df = pd.DataFrame()
+            for year, quarter in [(2026, 1), (2025, 4), (2025, 3)]:
+                try:
+                    profit_data = bs.query_profit_data(code=stock_code, year=year, quarter=quarter)
+                    if profit_data.error_code == '0':
+                        tmp_df = profit_data.get_data()
+                        if not tmp_df.empty:
+                            profit_df = tmp_df
+                            break
+                except Exception:
+                    continue
             
-            # 合并财务数据
-            financial_data = {}
-            for df, category in [(profit_df, '盈利能力'), (valuation_df, '估值指标'), (growth_df, '成长指标')]:
-                if not df.empty:
-                    financial_data[category] = df.set_index('statName').to_dict()
+            if not profit_df.empty:
+                row = profit_df.iloc[-1]
+                financial_data['ROE'] = float(row.get('roeAvg', 0)) if pd.notna(row.get('roeAvg', None)) else None
+                financial_data['EPS'] = float(row.get('epsTTM', 0)) if pd.notna(row.get('epsTTM', None)) else None
+                financial_data['报告期'] = str(row.get('statDate', ''))
             
+            # 获取分红数据（最近年度，计算股息率）
+            try:
+                dividend_data = bs.query_dividend_data(code=stock_code, year='2025', yearType='report')
+                if dividend_data.error_code == '0':
+                    dividend_df = dividend_data.get_data()
+                    if not dividend_df.empty:
+                        # 取最近一次分红
+                        div_row = dividend_df.iloc[0]
+                        cash_ps = div_row.get('dividCashPsBeforeTax', None)
+                        try:
+                            financial_data['每股股息'] = float(cash_ps) if pd.notna(cash_ps) else None
+                        except (TypeError, ValueError):
+                            financial_data['每股股息'] = None
+            except Exception:
+                pass
+            
+            # 计算PE/PB/股息率（需要当前股价）
+            if current_price and current_price > 0:
+                if financial_data['EPS']:
+                    financial_data['PE'] = round(current_price / financial_data['EPS'], 2)
+                if financial_data['ROE'] and financial_data['EPS']:
+                    # PB = 股价 / 每股净资产；每股净资产 = EPS / ROE
+                    bps = financial_data['EPS'] / financial_data['ROE'] if financial_data['ROE'] > 0 else None
+                    if bps:
+                        financial_data['PB'] = round(current_price / bps, 2)
+                if financial_data['每股股息']:
+                    financial_data['股息率'] = round(financial_data['每股股息'] / current_price * 100, 2)
+            
+            self.logger.info(f"💹 获取 {stock_code} 财务数据: ROE={financial_data['ROE']}, EPS={financial_data['EPS']}, PE={financial_data['PE']}, PB={financial_data['PB']}")
             return financial_data
             
         except Exception as e:
             self.logger.error(f"❌ 获取 {stock_code} 财务数据异常: {e}")
-            return {}
+            return {'ROE': None, 'EPS': None, 'PE': None, 'PB': None, '股息率': None, '每股股息': None, '报告期': None}
     
     def get_industry_data(self) -> pd.DataFrame:
         """获取行业板块数据"""

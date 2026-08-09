@@ -385,24 +385,43 @@ class HTMLGenerator:
             # 状态样式
             status_class = 'positive' if recommendation in ['强烈买入', '买入'] else 'neutral' if recommendation == '关注' else 'negative'
             
-            # 获取技术指标
+            # 获取技术指标（优先使用analysis_results中的值，保证数据正确）
             metrics = {}
+            latest = None
             if stock_code in stock_data and 'daily' in stock_data[stock_code]:
                 daily_data = stock_data[stock_code]['daily']
                 if not daily_data.empty:
                     latest = daily_data.iloc[-1]
-                    metrics = {
-                        '最新价': latest.get('收盘价', 0),
-                        '成交量': latest.get('成交量', 0),
-                        '换手率': latest.get('换手率', 0),
-                        'MA5': latest.get('MA5', 0),
-                        'MA10': latest.get('MA10', 0),
-                        'MA20': latest.get('MA20', 0),
-                        'MA60': latest.get('MA60', 0),
-                        '量比': latest.get('量比', 0),
-                        'RSI': latest.get('RSI', 0),
-                        'MACD': latest.get('MACD', 0)
-                    }
+            
+            def _val(key, fallback_key=None):
+                if key in result and result[key] not in (None, ''):
+                    return result[key]
+                if latest is not None:
+                    return latest.get(fallback_key or key, 0)
+                return 0
+            
+            metrics = {
+                '最新价': _val('最新价', '收盘价'),
+                '成交量': _val('成交量'),
+                '换手率': _val('换手率'),
+                'MA5': _val('MA5'),
+                'MA10': _val('MA10'),
+                'MA20': _val('MA20'),
+                'MA60': _val('MA60'),
+                'MA250': _val('MA250'),
+                '量比': _val('量比'),
+                'RSI': _val('RSI'),
+                'MACD': _val('MACD'),
+                'MACD_Signal': _val('MACD_Signal'),
+                '动能状态': _val('动能状态'),
+                '量价配合度': _val('量价配合度'),
+                '所属板块': result.get('所属板块', '未知'),
+                'PE': result.get('PE'),
+                'PB': result.get('PB'),
+                'ROE': result.get('ROE'),
+                '股息率': result.get('股息率'),
+                'EPS': result.get('EPS'),
+            }
             
             # 生成卡片HTML
             card_html = f"""
@@ -410,7 +429,7 @@ class HTMLGenerator:
                 <div class="stock-header">
                     <div class="stock-info">
                         <h3>{stock_name}</h3>
-                        <div class="stock-code">{stock_code}</div>
+                        <div class="stock-code">{stock_code} · {metrics.get('所属板块', '未知')}</div>
                     </div>
                     <div class="score-badge {score_class}">{score:.1f}分</div>
                 </div>
@@ -447,6 +466,41 @@ class HTMLGenerator:
                     <div class="metric">
                         <div class="metric-label">RSI</div>
                         <div class="metric-value">{metrics.get('RSI', 0):.2f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">MACD</div>
+                        <div class="metric-value">{metrics.get('MACD', 0):.2f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">动能状态</div>
+                        <div class="metric-value">{metrics.get('动能状态', '未知')}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">MA10</div>
+                        <div class="metric-value">{metrics.get('MA10', 0):.2f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">MA250</div>
+                        <div class="metric-value">{metrics.get('MA250', 0):.2f}</div>
+                    </div>
+                </div>
+                
+                <div class="metrics" style="margin-top: 10px;">
+                    <div class="metric">
+                        <div class="metric-label">PE</div>
+                        <div class="metric-value">{metrics.get('PE', '-') if metrics.get('PE') is not None else '-'}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">PB</div>
+                        <div class="metric-value">{metrics.get('PB', '-') if metrics.get('PB') is not None else '-'}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">ROE</div>
+                        <div class="metric-value">{metrics.get('ROE', '-') if metrics.get('ROE') is not None else '-'}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">股息率</div>
+                        <div class="metric-value">{metrics.get('股息率', '-') if metrics.get('股息率') is not None else '-'}</div>
                     </div>
                 </div>
                 

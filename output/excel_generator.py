@@ -64,6 +64,7 @@ class ExcelGenerator:
                     row = {
                         '股票代码': stock_code,
                         '股票名称': result.get('股票名称', '未知'),
+                        '所属板块': result.get('所属板块', '未知'),
                         '综合评分': result.get('综合评分', 0),
                         '基础过滤': '✅' if result.get('基础过滤', False) else '❌',
                         '三振共振': '✅' if result.get('三振共振', False) else '❌',
@@ -71,6 +72,11 @@ class ExcelGenerator:
                         '平台状态': result.get('平台状态', '未知'),
                         '建议操作': result.get('建议操作', '观望'),
                         '止损位': result.get('止损位', '无'),
+                        '最新价': result.get('最新价', 0),
+                        'PE': result.get('PE'),
+                        'PB': result.get('PB'),
+                        'ROE': result.get('ROE'),
+                        '股息率': result.get('股息率'),
                         '更新时间': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     summary_data.append(row)
@@ -109,9 +115,41 @@ class ExcelGenerator:
                     detail_data.append(['基础信息', '', ''])
                     detail_data.append(['股票代码', stock_code, ''])
                     detail_data.append(['股票名称', result.get('股票名称', '未知'), ''])
+                    detail_data.append(['所属板块', result.get('所属板块', '未知'), ''])
                     detail_data.append(['综合评分', result.get('综合评分', 0), ''])
                     detail_data.append(['建议操作', result.get('建议操作', '观望'), ''])
                     detail_data.append(['止损位', result.get('止损位', '无'), ''])
+                    detail_data.append(['', '', ''])
+                    
+                    # 技术指标（最新交易日）
+                    detail_data.append(['技术指标（最新交易日）', '', ''])
+                    detail_data.append(['最新价', result.get('最新价', 0), ''])
+                    detail_data.append(['MA5', result.get('MA5', 0), ''])
+                    detail_data.append(['MA10', result.get('MA10', 0), ''])
+                    detail_data.append(['MA20', result.get('MA20', 0), ''])
+                    detail_data.append(['MA60', result.get('MA60', 0), ''])
+                    detail_data.append(['MA250', result.get('MA250', 0), ''])
+                    detail_data.append(['均线排列', result.get('均线排列', 0), ''])
+                    detail_data.append(['量比', result.get('量比', 0), ''])
+                    detail_data.append(['RSI', result.get('RSI', 0), ''])
+                    detail_data.append(['MACD', result.get('MACD', 0), ''])
+                    detail_data.append(['MACD_Signal', result.get('MACD_Signal', 0), ''])
+                    detail_data.append(['MACD_信号', result.get('MACD_信号', 0), ''])
+                    detail_data.append(['动能状态', result.get('动能状态', '未知'), ''])
+                    detail_data.append(['量价配合度', result.get('量价配合度', 0), ''])
+                    detail_data.append(['换手率', result.get('换手率', 0), ''])
+                    detail_data.append(['成交量', result.get('成交量', 0), ''])
+                    detail_data.append(['', '', ''])
+                    
+                    # 财务指标
+                    detail_data.append(['财务指标', '', ''])
+                    detail_data.append(['ROE', result.get('ROE'), ''])
+                    detail_data.append(['EPS', result.get('EPS'), ''])
+                    detail_data.append(['PE', result.get('PE'), ''])
+                    detail_data.append(['PB', result.get('PB'), ''])
+                    detail_data.append(['股息率', result.get('股息率'), ''])
+                    detail_data.append(['每股股息', result.get('每股股息'), ''])
+                    detail_data.append(['报告期', result.get('财务报告期', ''), ''])
                     detail_data.append(['', '', ''])
                     
                     # 基础过滤结果
@@ -180,35 +218,50 @@ class ExcelGenerator:
             
             for stock_code, result in analysis_results.items():
                 if isinstance(result, dict) and '综合评分' in result:
-                    # 获取最新的技术指标数据
+                    # 优先从analysis_results读取已计算的技术指标（保证数据正确）
+                    # 若缺失则回退到stock_data中的最新行
+                    latest = None
                     if stock_code in stock_data:
                         daily_data = stock_data[stock_code].get('daily')
                         if daily_data is not None and not daily_data.empty:
                             latest = daily_data.iloc[-1]
-                            
-                            # 提取关键技术指标
-                            row = {
-                                '股票代码': stock_code,
-                                '股票名称': result.get('股票名称', '未知'),
-                                '最新价': latest.get('收盘价', 0),
-                                '成交量': latest.get('成交量', 0),
-                                '成交额': latest.get('成交额', 0),
-                                '换手率': latest.get('换手率', 0),
-                                'MA5': latest.get('MA5', 0),
-                                'MA10': latest.get('MA10', 0),
-                                'MA20': latest.get('MA20', 0),
-                                'MA60': latest.get('MA60', 0),
-                                'MA250': latest.get('MA250', 0),
-                                '均线排列': latest.get('均线排列', '未知'),
-                                '价格距MA20': latest.get('价格距20日均线', 0),
-                                '量比': latest.get('量比', 0),
-                                'RSI': latest.get('RSI', 0),
-                                'MACD': latest.get('MACD', 0),
-                                'MACD_Signal': latest.get('MACD_Signal', 0),
-                                'MACD_信号': latest.get('MACD_信号', 0),
-                                '动能状态': latest.get('动能状态', '未知')
-                            }
-                            indicators_data.append(row)
+                    
+                    def _val(key, fallback_key=None):
+                        """从result取指标值，缺失时从latest取"""
+                        if key in result and result[key] not in (None, ''):
+                            return result[key]
+                        if latest is not None:
+                            return latest.get(fallback_key or key, 0)
+                        return 0
+                    
+                    # 提取关键技术指标
+                    row = {
+                        '股票代码': stock_code,
+                        '股票名称': result.get('股票名称', '未知'),
+                        '所属板块': result.get('所属板块', '未知'),
+                        '最新价': _val('最新价', '收盘价'),
+                        '成交量': _val('成交量'),
+                        '成交额': latest.get('成交额', 0) if latest is not None else 0,
+                        '换手率': _val('换手率'),
+                        'MA5': _val('MA5'),
+                        'MA10': _val('MA10'),
+                        'MA20': _val('MA20'),
+                        'MA60': _val('MA60'),
+                        'MA250': _val('MA250'),
+                        '均线排列': _val('均线排列'),
+                        '量比': _val('量比'),
+                        'RSI': _val('RSI'),
+                        'MACD': _val('MACD'),
+                        'MACD_Signal': _val('MACD_Signal'),
+                        'MACD_信号': _val('MACD_信号'),
+                        '动能状态': _val('动能状态'),
+                        '量价配合度': _val('量价配合度'),
+                        'PE': result.get('PE'),
+                        'PB': result.get('PB'),
+                        'ROE': result.get('ROE'),
+                        '股息率': result.get('股息率')
+                    }
+                    indicators_data.append(row)
             
             # 转换为DataFrame
             indicators_df = pd.DataFrame(indicators_data)
