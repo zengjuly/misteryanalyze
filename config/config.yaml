@@ -1,0 +1,231 @@
+# Mystery趋势交易分析系统配置文件
+
+# 基础配置
+output_dir: "output"
+log_level: "INFO"
+log_file: "logs/stock_analysis.log"
+
+# 数据库配置
+database:
+  host: "localhost"
+  port: 3306
+  username: "root"
+  password: ""
+  database: "stock_analysis"
+
+# Baostock配置
+baostock:
+  login: "anonymous"
+  password: "123456"
+  fields: "date,open,high,low,close,volume,amount,turn,pctChg"
+  frequency: "d"
+  adjustflag: "3"
+
+# 股票配置
+stocks:
+  # A股股票代码
+  - "sh600000"  # 浦发银行
+  - "sh600036"  # 招商银行
+  - "sh600519"  # 贵州茅台
+  - "sz000001"  # 平安银行
+  - "sz000002"  # 万科A
+  - "sz000858"  # 五粮液
+  - "sz002415"  # 海康威视
+  - "sz300750"  # 宁德时代
+  - "sz300059"  # 东方财富
+  - "sh600276"  # 恒瑞医药
+  - "sh600887"  # 伊利股份
+  - "sz000858"  # 五粮液
+  - "sh600036"  # 招商银行
+  - "sz000001"  # 平安银行
+  - "sh600519"  # 贵州茅台
+
+# 行业配置
+industries:
+  - "银行"
+  - "白酒"
+  - "医药"
+  - "科技"
+  - "新能源"
+  - "消费"
+  - "房地产"
+  - "保险"
+  - "汽车"
+  - "化工"
+
+# 大盘指数配置
+market_indices:
+  - "sh000001"  # 上证指数
+  - "sz399001"  # 深证成指
+  - "sz399006"  # 创业板指
+  - "sh000300"  # 沪深300
+  - "sz399905"  # 中证500
+
+# 技术指标配置
+indicators:
+  # 均线系统
+  ma_periods: [5, 10, 20, 60, 250]
+  ema_periods: [12, 26]
+  
+  # 趋势指标
+  macd_params:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+  
+  # 动能指标
+  rsi_period: 14
+  kdj_params:
+    k_period: 9
+    d_period: 3
+    j_period: 3
+  
+  # 成交量指标
+  volume_ma_period: 20
+  volume_ratio_period: 5
+
+# Mystery理论配置
+mystery:
+  # 基础过滤参数
+  min_price: 5.0
+  max_price: 1000.0
+  min_volume: 1000000
+  max_turnover_ratio: 0.15
+  
+  # 三振共振参数
+  resonance_threshold: 0.7
+  
+  # 主升浪参数
+  ma5_slope_threshold: 0.01
+  ma5_break_threshold: 0.05
+  
+  # 平台突破参数
+  platform_volume_ratio: 1.5
+  platform_days_min: 20
+  platform_days_max: 60
+  
+  # 形态识别参数
+  head_shoulder_reliability: 0.7
+  double_pattern_reliability: 0.75
+  triangle_reliability: 0.6
+
+# 输出配置
+output:
+  # Excel配置
+  excel:
+    include_summary: true
+    include_indicators: true
+    include_patterns: true
+    include_history: true
+    max_history_days: 30
+  
+  # HTML配置
+  html:
+    include_charts: true
+    include_realtime: true
+    auto_refresh: true
+    refresh_interval: 30  # 秒
+  
+  # 报告配置
+  reports:
+    daily_summary: true
+    weekly_summary: false
+    monthly_summary: false
+
+# 风险控制配置
+risk_control:
+  # 止损设置
+  stop_loss:
+    enabled: true
+    percentage: 0.08  # 8%
+    max_loss_days: 3
+  
+  # 仓位控制
+  position:
+    max_position: 0.2  # 单只股票最大仓位20%
+    total_position: 0.8  # 总仓位80%
+    
+  # 风险预警
+  warnings:
+    high_risk_score: 30
+    low_liquidity_score: 40
+    high_volatility_score: 25
+
+# 性能配置
+performance:
+  # 数据获取
+  data_fetch:
+    timeout: 30
+    retry_times: 3
+    retry_delay: 5
+  
+  # 计算优化
+  calculation:
+    parallel_processing: true
+    batch_size: 50
+    cache_enabled: true
+    
+  # 内存管理
+  memory:
+    max_memory_usage: 2048  # MB
+    cleanup_interval: 3600  # 秒
+
+# 通知配置
+notifications:
+  # 邮件通知
+  email:
+    enabled: false
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: ""
+    password: ""
+    recipients: []
+    
+  # 微信通知
+  wechat:
+    enabled: false
+    corp_id: ""
+    corp_secret: ""
+    agent_id: ""
+    
+  # 钉钉通知
+  dingtalk:
+    enabled: false
+    webhook: ""
+
+# 定时任务配置
+scheduler:
+  # 每日分析
+  daily_analysis:
+    enabled: true
+    time: "09:30"  # 交易时间开始
+    timezone: "Asia/Shanghai"
+    
+  # 实时监控
+  realtime_monitor:
+    enabled: false
+    interval: 300  # 5分钟
+    
+  # 定时报告
+  scheduled_reports:
+    enabled: false
+    daily_time: "18:00"
+    weekly_day: 5  # 周五
+    monthly_day: 1  # 每月1日
+
+# 开发调试配置
+debug:
+  # 调试模式
+  enabled: false
+  
+  # 详细日志
+  verbose: false
+  
+  # 数据验证
+  data_validation: true
+  
+  # 性能监控
+  performance_monitoring: false
+  
+  # 调试工具
+  debug_tools: []
