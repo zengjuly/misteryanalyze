@@ -65,13 +65,19 @@ python3 -m venv venv
 # 激活虚拟环境
 source venv/bin/activate
 
-# 安装依赖
+# 安装依赖（推荐）
+pip install -r requirements.txt
+
+# 或手动安装
 pip install baostock pandas numpy openpyxl pyyaml
 ```
 
-### 2. 运行演示
+### 2. 运行演示（无需外部依赖）
 ```bash
-# 运行简化演示
+# 运行简化演示（不依赖 baostock/pandas，开箱即用）
+python3 simple_test_v2.py
+
+# 运行完整演示
 python3 simple_demo.py
 ```
 
