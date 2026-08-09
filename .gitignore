@@ -38,6 +38,9 @@ output/test_*
 output/stock_*
 output/analysis_*
 
+# Test reports
+test_report_*.txt
+
 # IDE
 .vscode/
 .idea/
