@@ -510,10 +510,33 @@ class HTMLGenerator:
                 </div>
                 
                 <div class="details">
+                    <h4>三振共振</h4>
+                    <ul>
+                        <li>个股趋势: {'✅ 走强' if result.get('个股趋势', False) else '❌ 走弱'}</li>
+                        <li>行业趋势: {'✅ 走强' if result.get('行业趋势', False) else '❌ 走弱'} (近5日均涨跌 {result.get('行业平均涨跌幅', '-')}%)</li>
+                        <li>大盘趋势: {'✅ 走强' if result.get('大盘趋势', False) else '❌ 走弱'}</li>
+                        <li>三振共振: {'✅ 成立' if result.get('三振共振', False) else '❌ 不成立'}</li>
+                    </ul>
+                    <h4>多周期分析</h4>
+                    <ul>
+                        <li>周线: {result.get('周线趋势', '未知')} (MA20: {result.get('周线MA20', '-')})</li>
+                        <li>月线: {result.get('月线趋势', '未知')} (MA10: {result.get('月线MA10', '-')})</li>
+                        <li>多周期共振: {'✅' if result.get('多周期共振', False) else '❌'}</li>
+                    </ul>
+                    <h4>主升浪指标 {result.get('主升浪满足数量', 0)}/8项 · {result.get('主升浪综合判断', '未知')}</h4>
+                    <ul>
+                        <li>长期横盘3个月以上: {'✅' if result.get('主升浪指标对比', {}).get('长期横盘3个月以上', False) else '❌'}</li>
+                        <li>60日均线开始向上: {'✅' if result.get('主升浪指标对比', {}).get('60日均线开始向上', False) else '❌'}</li>
+                        <li>股价突破平台: {'✅' if result.get('主升浪指标对比', {}).get('股价突破平台', False) else '❌'}</li>
+                        <li>放量超20日均量2倍: {'✅' if result.get('主升浪指标对比', {}).get('放量超20日均量2倍', False) else '❌'}</li>
+                        <li>回踩不破+MACD零轴金叉: {'✅' if result.get('主升浪指标对比', {}).get('回踩不破+MACD零轴金叉', False) else '❌'}</li>
+                        <li>RSI大于50继续走强: {'✅' if result.get('主升浪指标对比', {}).get('RSI>50继续走强', False) else '❌'}</li>
+                        <li>主力资金连续流入: {'✅' if result.get('主升浪指标对比', {}).get('主力资金连续流入', False) else '❌'}</li>
+                        <li>行业板块同步走强: {'✅' if result.get('主升浪指标对比', {}).get('行业板块同步走强', False) else '❌'}</li>
+                    </ul>
                     <h4>分析详情</h4>
                     <ul>
                         <li>基础过滤: {'✅ 通过' if result.get('基础过滤', False) else '❌ 不通过'}</li>
-                        <li>三振共振: {'✅ 成立' if result.get('三振共振', False) else '❌ 不成立'}</li>
                         <li>主升浪状态: {result.get('主升浪状态', '未知')}</li>
                         <li>平台状态: {result.get('平台状态', '未知')}</li>
                         <li>破五反五: {'✅' if result.get('破五反五', False) else '❌'}</li>

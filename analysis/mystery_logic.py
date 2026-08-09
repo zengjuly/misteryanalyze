@@ -84,11 +84,13 @@ class MysteryLogic:
             errors.append(f"基础过滤异常: {e}")
             return False, errors
     
-    def three_resonance_analysis(self, data: pd.DataFrame, market_data: pd.DataFrame = None) -> Dict[str, Any]:
+    def three_resonance_analysis(self, data: pd.DataFrame, market_data: Dict = None,
+                                 industry_trend: bool = None) -> Dict[str, Any]:
         """
-        三振共振选股法
-        :param data: 个股数据
-        :param market_data: 市场指数数据（可选）
+        三振共振选股法（个股 + 行业 + 大盘）
+        :param data: 个股数据（含技术指标）
+        :param market_data: 大盘指数数据字典 {指数名: DataFrame}（可选）
+        :param industry_trend: 行业趋势判断结果 True/False/None（可选，由外部计算）
         :return: 共振分析结果
         """
         try:
@@ -113,26 +115,46 @@ class MysteryLogic:
                         result['个股趋势'] = True
                         result['详情'].append("股价运行在20日均线上方")
             
-            # 2. 行业趋势判断（简化处理，这里需要实际行业数据）
-            # 实际应用中应该获取行业板块数据进行分析
-            result['行业趋势'] = True  # 暂时设为True，实际需要行业数据
-            result['详情'].append("行业趋势待完善")
+            if not result['个股趋势']:
+                result['详情'].append("个股趋势：均线未多头排列或股价在20日线下方")
             
-            # 3. 大盘趋势判断（如果有市场数据）
-            if market_data is not None and not market_data.empty:
-                # 简化判断：使用上证指数
-                if '上证指数' in market_data:
-                    index_data = market_data['上证指数']
-                    if len(index_data) > 0:
+            # 2. 行业趋势判断（使用外部传入的真实行业数据）
+            if industry_trend is True:
+                result['行业趋势'] = True
+                result['详情'].append("行业板块同步走强")
+            elif industry_trend is False:
+                result['行业趋势'] = False
+                result['详情'].append("行业板块走弱")
+            else:
+                result['行业趋势'] = False
+                result['详情'].append("行业趋势数据缺失")
+            
+            # 3. 大盘趋势判断（使用真实指数数据）
+            if market_data:
+                # 优先使用上证指数
+                index_name = '上证指数' if '上证指数' in market_data else (list(market_data.keys())[0] if market_data else None)
+                if index_name:
+                    index_data = market_data[index_name]
+                    if index_data is not None and not index_data.empty:
+                        # 计算指数MA20（若不存在）
+                        if 'MA20' not in index_data.columns and '收盘价' in index_data.columns:
+                            index_data = index_data.copy()
+                            index_data['MA20'] = index_data['收盘价'].rolling(20).mean()
+                            index_data['MA60'] = index_data['收盘价'].rolling(60).mean()
+                        
                         latest_index = index_data.iloc[-1]
                         if 'MA20' in index_data.columns and '收盘价' in index_data.columns:
-                            if (pd.notna(latest_index['MA20']) and pd.notna(latest_index['收盘价']) and
-                                latest_index['收盘价'] > latest_index['MA20']):
-                                result['大盘趋势'] = True
-                                result['详情'].append("大盘运行在20日均线上方")
+                            if (pd.notna(latest_index['MA20']) and pd.notna(latest_index['收盘价'])):
+                                if latest_index['收盘价'] > latest_index['MA20']:
+                                    result['大盘趋势'] = True
+                                    result['详情'].append(f"大盘({index_name})运行在20日均线上方")
+                                else:
+                                    result['详情'].append(f"大盘({index_name})运行在20日均线下方")
+                            else:
+                                result['详情'].append("大盘MA20数据不足")
             else:
-                result['大盘趋势'] = True  # 暂时设为True，实际需要市场数据
-                result['详情'].append("大盘趋势待完善")
+                result['大盘趋势'] = False
+                result['详情'].append("大盘趋势数据缺失")
             
             # 4. 三级共振判断
             if result['个股趋势'] and result['行业趋势'] and result['大盘趋势']:
@@ -318,6 +340,189 @@ class MysteryLogic:
             self.logger.error(f"❌ 平台突破分析异常: {e}")
             return {'平台状态': '异常', '详情': [f"分析异常: {e}"]}
     
+    def main_bull_wave_checklist(self, data: pd.DataFrame, industry_trend: bool = None) -> Dict[str, Any]:
+        """
+        强势主升浪选股指标对比表（8项）
+        1. 长期横盘3个月以上
+        2. 60日均线开始向上
+        3. 股价突破平台
+        4. 放量超过近20日平均成交量的2倍
+        5. 回踩平台不破，MACD在零轴附近金叉
+        6. RSI在50以上继续走强
+        7. 主力资金连续流入
+        8. 行业板块同步走强
+        :param data: 含技术指标的日线数据
+        :param industry_trend: 行业趋势（True/False/None）
+        :return: 各项指标满足情况 + 满足数量
+        """
+        try:
+            checklist = {
+                '长期横盘3个月以上': False,
+                '60日均线开始向上': False,
+                '股价突破平台': False,
+                '放量超20日均量2倍': False,
+                '回踩不破+MACD零轴金叉': False,
+                'RSI>50继续走强': False,
+                '主力资金连续流入': False,
+                '行业板块同步走强': False,
+                '详情': [],
+            }
+            
+            if data is None or data.empty:
+                checklist['详情'].append("数据为空")
+                checklist['满足数量'] = 0
+                return checklist
+            
+            latest = data.iloc[-1]
+            
+            # 1. 长期横盘3个月以上（约60个交易日）：60日内振幅小于25%
+            if len(data) >= 60:
+                recent_60 = data.tail(60)
+                high_60 = recent_60['最高价'].max()
+                low_60 = recent_60['最低价'].min()
+                avg_60 = recent_60['收盘价'].mean()
+                if pd.notna(high_60) and pd.notna(low_60) and pd.notna(avg_60) and avg_60 > 0:
+                    amplitude_60 = (high_60 - low_60) / avg_60 * 100
+                    if amplitude_60 < 25:
+                        checklist['长期横盘3个月以上'] = True
+                        checklist['详情'].append(f"60日振幅{amplitude_60:.1f}%（<25%）")
+                    else:
+                        checklist['详情'].append(f"60日振幅{amplitude_60:.1f}%（>=25%，未横盘）")
+            else:
+                checklist['详情'].append("数据不足60日，无法判断横盘")
+            
+            # 2. 60日均线开始向上：MA60斜率 > 0
+            if 'MA60' in data.columns and len(data) >= 65:
+                ma60_series = data['MA60'].dropna()
+                if len(ma60_series) >= 6:
+                    ma60_slope = ma60_series.iloc[-1] - ma60_series.iloc[-6]
+                    if ma60_slope > 0:
+                        checklist['60日均线开始向上'] = True
+                        checklist['详情'].append(f"MA60近5日上行{ma60_slope:.2f}")
+                    else:
+                        checklist['详情'].append(f"MA60近5日{ma60_slope:.2f}（未向上）")
+            else:
+                checklist['详情'].append("MA60数据不足")
+            
+            # 3. 股价突破平台：收盘价创近20日新高
+            if len(data) >= 21:
+                recent_20_high = data['最高价'].tail(20).max()
+                if pd.notna(recent_20_high) and pd.notna(latest['收盘价']):
+                    if latest['收盘价'] >= recent_20_high:
+                        checklist['股价突破平台'] = True
+                        checklist['详情'].append(f"收盘价{latest['收盘价']:.2f}突破近20日高点{recent_20_high:.2f}")
+                    else:
+                        checklist['详情'].append(f"未突破近20日高点{recent_20_high:.2f}")
+            else:
+                checklist['详情'].append("数据不足20日")
+            
+            # 4. 放量超过近20日平均成交量的2倍
+            if '成交量' in data.columns and len(data) >= 21:
+                avg_vol_20 = data['成交量'].tail(20).mean()
+                if pd.notna(avg_vol_20) and avg_vol_20 > 0 and pd.notna(latest['成交量']):
+                    vol_ratio_20 = latest['成交量'] / avg_vol_20
+                    if vol_ratio_20 >= 2.0:
+                        checklist['放量超20日均量2倍'] = True
+                        checklist['详情'].append(f"当日量/20日均量={vol_ratio_20:.2f}（>=2倍）")
+                    else:
+                        checklist['详情'].append(f"当日量/20日均量={vol_ratio_20:.2f}（<2倍）")
+            else:
+                checklist['详情'].append("成交量数据不足")
+            
+            # 5. 回踩平台不破 + MACD在零轴附近金叉
+            if len(data) >= 2:
+                yesterday = data.iloc[-2]
+                # 回踩不破：前一日低点未破近20日平台低点
+                platform_low = data['最低价'].tail(20).min() if len(data) >= 20 else data['最低价'].min()
+                pullback_ok = True
+                if pd.notna(yesterday['最低价']) and pd.notna(platform_low):
+                    pullback_ok = yesterday['最低价'] >= platform_low * 0.98  # 允许2%误差
+                
+                # MACD零轴附近金叉
+                macd_golden = False
+                if all(col in data.columns for col in ['MACD', 'MACD_Signal']):
+                    macd_now = latest.get('MACD', 0)
+                    signal_now = latest.get('MACD_Signal', 0)
+                    macd_prev = yesterday.get('MACD', 0)
+                    signal_prev = yesterday.get('MACD_Signal', 0)
+                    # 金叉：MACD上穿信号线；零轴附近：|MACD| < 1.0（简化，按价格比例）
+                    near_zero = abs(macd_now) < (latest['收盘价'] * 0.01) if pd.notna(latest['收盘价']) else False
+                    golden_cross = (macd_now > signal_now) and (macd_prev <= signal_prev)
+                    if golden_cross or (macd_now > signal_now and near_zero):
+                        macd_golden = True
+                
+                if pullback_ok and macd_golden:
+                    checklist['回踩不破+MACD零轴金叉'] = True
+                    checklist['详情'].append("回踩平台未破，MACD零轴附近金叉")
+                else:
+                    checklist['详情'].append(
+                        f"回踩{'未破' if pullback_ok else '破位'}/MACD{'金叉' if macd_golden else '未金叉'}")
+            else:
+                checklist['详情'].append("数据不足2日")
+            
+            # 6. RSI在50以上继续走强
+            if 'RSI' in data.columns and len(data) >= 6:
+                rsi_now = latest.get('RSI', 0)
+                rsi_5ago = data['RSI'].iloc[-6] if len(data) >= 6 else rsi_now
+                if pd.notna(rsi_now) and pd.notna(rsi_5ago):
+                    if rsi_now > 50 and rsi_now >= rsi_5ago:
+                        checklist['RSI>50继续走强'] = True
+                        checklist['详情'].append(f"RSI={rsi_now:.1f}（>50且上行）")
+                    else:
+                        checklist['详情'].append(f"RSI={rsi_now:.1f}（{'<50' if rsi_now <= 50 else '走弱'}）")
+            else:
+                checklist['详情'].append("RSI数据不足")
+            
+            # 7. 主力资金连续流入：连续3日收盘上涨且放量（近似判断）
+            if len(data) >= 4 and '成交量' in data.columns and '涨跌幅' in data.columns:
+                recent_3 = data.tail(3)
+                inflows = 0
+                for i in range(len(recent_3)):
+                    row = recent_3.iloc[i]
+                    prev_vol = data['成交量'].iloc[-4] if len(data) >= 4 else row['成交量']
+                    pct_chg = row.get('涨跌幅', 0)
+                    if pd.notna(pct_chg) and pct_chg > 0:
+                        inflows += 1
+                if inflows >= 2:  # 3日中至少2日上涨，视为资金流入
+                    checklist['主力资金连续流入'] = True
+                    checklist['详情'].append(f"近3日{inflows}日上涨")
+                else:
+                    checklist['详情'].append(f"近3日仅{inflows}日上涨")
+            else:
+                checklist['详情'].append("涨跌幅数据不足")
+            
+            # 8. 行业板块同步走强
+            if industry_trend is True:
+                checklist['行业板块同步走强'] = True
+                checklist['详情'].append("行业板块走强")
+            elif industry_trend is False:
+                checklist['详情'].append("行业板块走弱")
+            else:
+                checklist['详情'].append("行业趋势数据缺失")
+            
+            # 统计满足数量
+            items = [k for k in checklist if k != '详情']
+            satisfied = sum(1 for k in items if checklist[k])
+            checklist['满足数量'] = satisfied
+            checklist['满足占比'] = satisfied / len(items) if items else 0
+            
+            # 综合判断
+            if satisfied >= 6:
+                checklist['综合判断'] = '主升浪高概率'
+            elif satisfied >= 4:
+                checklist['综合判断'] = '主升浪中概率'
+            elif satisfied >= 2:
+                checklist['综合判断'] = '关注观察'
+            else:
+                checklist['综合判断'] = '暂不参与'
+            
+            self.logger.info(f"📋 主升浪指标对比: 满足{satisfied}/8项, {checklist['综合判断']}")
+            return checklist
+            
+        except Exception as e:
+            self.logger.error(f"❌ 主升浪指标对比异常: {e}")
+            return {'满足数量': 0, '综合判断': '异常', '详情': [f"分析异常: {e}"]}
+    
     def technical_detail_capture(self, data: pd.DataFrame) -> Dict[str, Any]:
         """
         技术细节捕捉
@@ -424,7 +629,11 @@ class MysteryLogic:
                 return result  # 基础过滤不通过，直接返回
             
             # 2. 三振共振分析
-            resonance_result = self.three_resonance_analysis(data, market_data)
+            # 兼容 market_data 为 DataFrame 或 Dict 两种形式
+            if isinstance(market_data, dict):
+                resonance_result = self.three_resonance_analysis(data, market_data)
+            else:
+                resonance_result = self.three_resonance_analysis(data)
             result['三振共振'] = resonance_result['三级共振']
             result['详情'].extend(resonance_result['详情'])
             

@@ -129,8 +129,8 @@ output:
   # 报告配置
   reports:
     daily_summary: true
-    weekly_summary: false
-    monthly_summary: false
+    weekly_summary: true
+    monthly_summary: true
 
 # 风险控制配置
 risk_control:
@@ -198,7 +198,7 @@ scheduler:
   # 每日分析
   daily_analysis:
     enabled: true
-    time: "09:30"  # 交易时间开始
+    time: "15:30"  # 交易时间开始
     timezone: "Asia/Shanghai"
     
   # 实时监控

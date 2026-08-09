@@ -67,8 +67,16 @@ class ExcelGenerator:
                         '所属板块': result.get('所属板块', '未知'),
                         '综合评分': result.get('综合评分', 0),
                         '基础过滤': '✅' if result.get('基础过滤', False) else '❌',
+                        '个股趋势': '✅' if result.get('个股趋势', False) else '❌',
+                        '行业趋势': '✅' if result.get('行业趋势', False) else '❌',
+                        '大盘趋势': '✅' if result.get('大盘趋势', False) else '❌',
                         '三振共振': '✅' if result.get('三振共振', False) else '❌',
                         '主升浪状态': result.get('主升浪状态', '未知'),
+                        '主升浪指标': f"{result.get('主升浪满足数量', 0)}/8",
+                        '主升浪判断': result.get('主升浪综合判断', '未知'),
+                        '周线趋势': result.get('周线趋势', '未知'),
+                        '月线趋势': result.get('月线趋势', '未知'),
+                        '多周期共振': '✅' if result.get('多周期共振', False) else '❌',
                         '平台状态': result.get('平台状态', '未知'),
                         '建议操作': result.get('建议操作', '观望'),
                         '止损位': result.get('止损位', '无'),
@@ -163,21 +171,43 @@ class ExcelGenerator:
                     # 三振共振分析
                     detail_data.append(['三振共振分析', '', ''])
                     detail_data.append(['三级共振', '✅' if result.get('三振共振', False) else '❌', ''])
-                    if '三振共振' in result and isinstance(result['三振共振'], dict):
-                        resonance = result['三振共振']
-                        detail_data.append(['个股趋势', '✅' if resonance.get('个股趋势', False) else '❌', ''])
-                        detail_data.append(['行业趋势', '✅' if resonance.get('行业趋势', False) else '❌', ''])
-                        detail_data.append(['大盘趋势', '✅' if resonance.get('大盘趋势', False) else '❌', ''])
+                    detail_data.append(['个股趋势', '✅' if result.get('个股趋势', False) else '❌', ''])
+                    detail_data.append(['行业趋势', '✅' if result.get('行业趋势', False) else '❌', ''])
+                    detail_data.append(['大盘趋势', '✅' if result.get('大盘趋势', False) else '❌', ''])
+                    detail_data.append(['行业近5日均涨跌', result.get('行业平均涨跌幅'), '%'])
+                    detail_data.append(['', '', ''])
+                    
+                    # 多周期分析
+                    detail_data.append(['多周期分析', '', ''])
+                    detail_data.append(['周线趋势', result.get('周线趋势', '未知'), ''])
+                    detail_data.append(['周线最新价', result.get('周线最新价'), ''])
+                    detail_data.append(['周线MA20', result.get('周线MA20'), ''])
+                    detail_data.append(['月线趋势', result.get('月线趋势', '未知'), ''])
+                    detail_data.append(['月线最新价', result.get('月线最新价'), ''])
+                    detail_data.append(['月线MA10', result.get('月线MA10'), ''])
+                    detail_data.append(['多周期共振', '✅' if result.get('多周期共振', False) else '❌', ''])
                     detail_data.append(['', '', ''])
                     
                     # 主升浪分析
                     detail_data.append(['主升浪分析', '', ''])
                     detail_data.append(['主升浪状态', result.get('主升浪状态', '未知'), ''])
+                    detail_data.append(['主升浪指标满足', f"{result.get('主升浪满足数量', 0)}/8", ''])
+                    detail_data.append(['主升浪综合判断', result.get('主升浪综合判断', '未知'), ''])
                     if '主升浪' in result and isinstance(result['主升浪'], dict):
                         bull_wave = result['主升浪']
                         detail_data.append(['持股状态', '✅' if bull_wave.get('持股状态', False) else '❌', ''])
                         detail_data.append(['空中加油', '✅' if bull_wave.get('空中加油', False) else '❌', ''])
                         detail_data.append(['MA5斜率', bull_wave.get('MA5斜率', 0), ''])
+                    detail_data.append(['', '', ''])
+                    
+                    # 主升浪8项指标对比表
+                    detail_data.append(['主升浪8项指标对比', '', ''])
+                    checklist = result.get('主升浪指标对比', {})
+                    for key in ['长期横盘3个月以上', '60日均线开始向上', '股价突破平台',
+                                '放量超20日均量2倍', '回踩不破+MACD零轴金叉', 'RSI>50继续走强',
+                                '主力资金连续流入', '行业板块同步走强']:
+                        mark = '✅' if checklist.get(key, False) else '❌'
+                        detail_data.append([key, mark, ''])
                     detail_data.append(['', '', ''])
                     
                     # 平台突破分析

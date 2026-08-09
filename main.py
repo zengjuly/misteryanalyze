@@ -170,10 +170,22 @@ class StockAnalysisSystem:
                 self.logger.info("💹 获取财务数据...")
                 financial_data_map = self._get_all_financial_data(processed_data)
                 
+                # 多周期分析（周线/月线趋势）
+                self.logger.info("📅 多周期分析（周线/月线）...")
+                multi_period_map = self._analyze_multi_period(processed_data)
+                
+                # 行业趋势分析（同行业样本股票近5日平均涨跌幅）
+                self.logger.info("🏭 行业趋势分析...")
+                industry_trend_map = {}
+                for code in processed_data:
+                    trend_info = self._analyze_industry_trend(code, industry_map, processed_data)
+                    industry_trend_map[code] = trend_info
+                
                 # Mystery理论分析
                 self.logger.info("🎯 Mystery理论分析...")
                 analysis_results = self._perform_mystery_analysis(
-                    indicators_data, processed_data, industry_map, financial_data_map
+                    indicators_data, processed_data, industry_map,
+                    financial_data_map, market_data, industry_trend_map, multi_period_map
                 )
                 
                 # 形态识别
@@ -267,20 +279,141 @@ class StockAnalysisSystem:
         """
         构建股票代码到所属板块的映射
         :param industry_data: baostock行业分类数据（含code/industry列）
-        :return: {股票代码: 所属板块}
+        :return: {'code_map': {股票代码: 所属板块}, 'industry_codes': {行业: [股票代码]}}
         """
-        industry_map = {}
+        code_map = {}
+        industry_codes = {}
         try:
             if industry_data is not None and not industry_data.empty:
                 for _, row in industry_data.iterrows():
                     code = row.get('code', '')
                     industry = row.get('industry', '')
                     if code and industry:
-                        industry_map[code] = industry
-                self.logger.info(f"🏢 构建行业映射: {len(industry_map)} 只股票")
+                        code_map[code] = industry
+                        industry_codes.setdefault(industry, []).append(code)
+                self.logger.info(f"🏢 构建行业映射: {len(code_map)} 只股票, {len(industry_codes)} 个行业")
         except Exception as e:
             self.logger.warning(f"⚠️ 构建行业映射异常: {e}")
-        return industry_map
+        return {'code_map': code_map, 'industry_codes': industry_codes}
+    
+    def _analyze_industry_trend(self, stock_code: str, industry_map: Dict,
+                                processed_data: Dict, max_samples: int = 3) -> Dict:
+        """
+        分析个股所属行业的板块趋势（同行业样本股票近5日平均涨跌幅）
+        :param stock_code: 股票代码
+        :param industry_map: 行业映射 {'code_map':..., 'industry_codes':...}
+        :param processed_data: 已获取的股票数据（优先使用缓存）
+        :param max_samples: 抽样股票数量
+        :return: {'趋势': True/False/None, '行业': 行业名, '平均涨跌幅': x, '样本数': n}
+        """
+        result = {'趋势': None, '行业': '未知', '平均涨跌幅': None, '样本数': 0}
+        try:
+            code_map = industry_map.get('code_map', {})
+            industry_codes = industry_map.get('industry_codes', {})
+            
+            # 标准化代码
+            norm_code = self.baostock_client.normalize_stock_code(stock_code)
+            industry = code_map.get(norm_code, '未知')
+            result['行业'] = industry
+            
+            if industry == '未知':
+                return result
+            
+            # 取同行业股票（排除自身），抽样
+            peers = [c for c in industry_codes.get(industry, []) if c != norm_code][:max_samples]
+            if not peers:
+                return result
+            
+            # 计算同行业样本股票的近5日平均涨跌幅
+            pct_changes = []
+            for peer in peers:
+                # 优先使用已获取的数据
+                peer_short = peer.replace('.', '')  # sh.600150 -> sh600150
+                peer_data = processed_data.get(peer_short, {})
+                daily = peer_data.get('daily') if isinstance(peer_data, dict) else None
+                if daily is None or daily.empty:
+                    try:
+                        # 获取最近10天数据
+                        from datetime import timedelta
+                        end = datetime.now().strftime('%Y-%m-%d')
+                        start = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+                        daily = self.baostock_client.get_daily_data(peer, start, end)
+                    except Exception:
+                        daily = None
+                
+                if daily is not None and not daily.empty and '涨跌幅' in daily.columns:
+                    recent_pct = daily['涨跌幅'].tail(5).dropna()
+                    if len(recent_pct) > 0:
+                        pct_changes.append(recent_pct.mean())
+            
+            if pct_changes:
+                avg_pct = sum(pct_changes) / len(pct_changes)
+                result['平均涨跌幅'] = round(float(avg_pct), 2)
+                result['样本数'] = len(pct_changes)
+                result['趋势'] = bool(avg_pct > 0)  # 转为Python bool，避免np.bool_的is比较问题
+                self.logger.info(
+                    f"🏭 {stock_code} 行业[{industry}] 样本{len(pct_changes)}只, 近5日平均涨跌{avg_pct:.2f}% "
+                    f"{'↑走强' if avg_pct > 0 else '↓走弱'}")
+        except Exception as e:
+            self.logger.warning(f"⚠️ 行业趋势分析异常 {stock_code}: {e}")
+        return result
+    
+    def _analyze_multi_period(self, processed_data: Dict) -> Dict:
+        """
+        多周期分析：计算周线/月线趋势
+        :param processed_data: 含daily/weekly/monthly的数据
+        :return: {股票代码: {'周线趋势': str, '月线趋势': str, '多周期共振': bool}}
+        """
+        multi_period = {}
+        try:
+            for stock_code, data in processed_data.items():
+                result = {'周线趋势': '未知', '月线趋势': '未知', '多周期共振': False}
+                
+                # 周线分析：MA5/MA10/MA20 多头排列
+                weekly = data.get('weekly') if isinstance(data, dict) else None
+                if weekly is not None and not weekly.empty and '收盘价' in weekly.columns:
+                    w = weekly.copy()
+                    w['MA5'] = w['收盘价'].rolling(5).mean()
+                    w['MA10'] = w['收盘价'].rolling(10).mean()
+                    w['MA20'] = w['收盘价'].rolling(20).mean()
+                    latest_w = w.iloc[-1]
+                    if (pd.notna(latest_w['MA5']) and pd.notna(latest_w['MA10']) and
+                        pd.notna(latest_w['MA20'])):
+                        if (latest_w['MA5'] > latest_w['MA10'] > latest_w['MA20'] and
+                            latest_w['收盘价'] > latest_w['MA20']):
+                            result['周线趋势'] = '多头排列'
+                        elif latest_w['MA5'] < latest_w['MA10'] < latest_w['MA20']:
+                            result['周线趋势'] = '空头排列'
+                        else:
+                            result['周线趋势'] = '震荡整理'
+                        result['周线最新价'] = round(float(latest_w['收盘价']), 2)
+                        result['周线MA20'] = round(float(latest_w['MA20']), 2)
+                
+                # 月线分析：MA5/MA10 多头排列
+                monthly = data.get('monthly') if isinstance(data, dict) else None
+                if monthly is not None and not monthly.empty and '收盘价' in monthly.columns:
+                    m = monthly.copy()
+                    m['MA5'] = m['收盘价'].rolling(5).mean()
+                    m['MA10'] = m['收盘价'].rolling(10).mean()
+                    latest_m = m.iloc[-1]
+                    if pd.notna(latest_m['MA5']) and pd.notna(latest_m['MA10']):
+                        if latest_m['MA5'] > latest_m['MA10'] and latest_m['收盘价'] > latest_m['MA10']:
+                            result['月线趋势'] = '多头排列'
+                        elif latest_m['MA5'] < latest_m['MA10']:
+                            result['月线趋势'] = '空头排列'
+                        else:
+                            result['月线趋势'] = '震荡整理'
+                        result['月线最新价'] = round(float(latest_m['收盘价']), 2)
+                        result['月线MA10'] = round(float(latest_m['MA10']), 2)
+                
+                # 多周期共振：日线(个股趋势) + 周线多头 + 月线多头
+                if (result['周线趋势'] == '多头排列' and result['月线趋势'] == '多头排列'):
+                    result['多周期共振'] = True
+                
+                multi_period[stock_code] = result
+        except Exception as e:
+            self.logger.error(f"❌ 多周期分析异常: {e}")
+        return multi_period
     
     def _get_all_financial_data(self, processed_data: Dict) -> Dict:
         """
@@ -303,12 +436,16 @@ class StockAnalysisSystem:
         return financial_map
     
     def _perform_mystery_analysis(self, indicators_data: Dict, processed_data: Dict,
-                                 industry_map: Dict = None, financial_data_map: Dict = None) -> Dict:
+                                 industry_map: Dict = None, financial_data_map: Dict = None,
+                                 market_data: Dict = None, industry_trend_map: Dict = None,
+                                 multi_period_map: Dict = None) -> Dict:
         """执行Mystery理论分析"""
         try:
             analysis_results = {}
             industry_map = industry_map or {}
             financial_data_map = financial_data_map or {}
+            industry_trend_map = industry_trend_map or {}
+            multi_period_map = multi_period_map or {}
             
             for stock_code, indicators in indicators_data.items():
                 # 获取对应的数据
@@ -322,11 +459,22 @@ class StockAnalysisSystem:
                 # 基础过滤
                 basic_passed, basic_errors = self.mystery_logic.basic_filter(indicators)
                 
-                # 三振共振分析（使用MysteryLogic内置方法）
-                resonance_analysis = self.mystery_logic.three_resonance_analysis(indicators)
+                # 行业趋势（外部计算的真实板块数据）
+                industry_info = industry_trend_map.get(stock_code, {})
+                industry_trend = industry_info.get('趋势')  # True/False/None
+                industry = industry_info.get('行业', '未知')
+                industry_avg_pct = industry_info.get('平均涨跌幅')
+                
+                # 三振共振分析（真实大盘指数 + 真实行业趋势）
+                resonance_analysis = self.mystery_logic.three_resonance_analysis(
+                    indicators, market_data, industry_trend)
                 
                 # 主升浪分析
                 bull_wave_analysis = self.mystery_logic.main_bull_wave_analysis(indicators)
+                
+                # 主升浪8项指标对比表
+                bull_wave_checklist = self.mystery_logic.main_bull_wave_checklist(
+                    indicators, industry_trend)
                 
                 # 平台突破分析
                 platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(indicators)
@@ -340,16 +488,11 @@ class StockAnalysisSystem:
                 # 提取最新交易日的技术指标值（供报告展示）
                 latest = indicators.iloc[-1]
                 
-                # 所属板块（通过标准化代码匹配行业映射）
-                normalized_code = self.baostock_client.normalize_stock_code(stock_code)
-                industry = industry_map.get(normalized_code, '未知')
-                # 兼容用户输入的原始格式（如 sh600150 vs sh.600150）
-                if industry == '未知' and '.' not in stock_code:
-                    industry = industry_map.get(
-                        f"{stock_code[:2]}.{stock_code[2:]}", '未知')
-                
                 # 财务数据
                 financial = financial_data_map.get(stock_code, {})
+                
+                # 多周期数据
+                multi_period = multi_period_map.get(stock_code, {})
                 
                 # 汇总分析结果
                 analysis_results[stock_code] = {
@@ -360,6 +503,9 @@ class StockAnalysisSystem:
                     '基础过滤详情': basic_errors,
                     '三振共振': resonance_analysis.get('三级共振', False),
                     '三振共振详情': resonance_analysis.get('详情', []),
+                    '个股趋势': resonance_analysis.get('个股趋势', False),
+                    '行业趋势': resonance_analysis.get('行业趋势', False),
+                    '大盘趋势': resonance_analysis.get('大盘趋势', False),
                     '主升浪状态': bull_wave_analysis.get('主升浪状态', '未知'),
                     '主升浪详情': bull_wave_analysis.get('详情', []),
                     '平台状态': platform_breakthrough.get('平台状态', '未知'),
@@ -368,8 +514,21 @@ class StockAnalysisSystem:
                     '止损位': comprehensive.get('止损位'),
                     '破五反五': technical_detail.get('破五反五', False),
                     '筹码集中度': technical_detail.get('筹码集中度', '未知'),
-                    # 所属板块
+                    # 所属板块与行业趋势
                     '所属板块': industry,
+                    '行业平均涨跌幅': industry_avg_pct,
+                    # 主升浪8项指标对比表
+                    '主升浪指标对比': bull_wave_checklist,
+                    '主升浪满足数量': bull_wave_checklist.get('满足数量', 0),
+                    '主升浪综合判断': bull_wave_checklist.get('综合判断', '未知'),
+                    # 多周期分析
+                    '周线趋势': multi_period.get('周线趋势', '未知'),
+                    '月线趋势': multi_period.get('月线趋势', '未知'),
+                    '周线最新价': multi_period.get('周线最新价'),
+                    '周线MA20': multi_period.get('周线MA20'),
+                    '月线最新价': multi_period.get('月线最新价'),
+                    '月线MA10': multi_period.get('月线MA10'),
+                    '多周期共振': multi_period.get('多周期共振', False),
                     # 技术指标值（最新交易日）
                     '最新价': latest.get('收盘价', 0),
                     'MA5': latest.get('MA5', 0),
@@ -511,13 +670,33 @@ class StockAnalysisSystem:
                 print(f"💡 建议操作: {analysis.get('建议操作', '未知')}")
                 print(f"🛡️ 止损位: {analysis.get('止损位', '无')}")
                 print(f"🔄 基础过滤: {'✅ 通过' if analysis.get('基础过滤', False) else '❌ 不通过'}")
+                
+                print("\n🎯 三振共振:")
+                print(f"📈 个股趋势: {'✅ 走强' if analysis.get('个股趋势', False) else '❌ 走弱'}")
+                print(f"🏭 行业趋势: {'✅ 走强' if analysis.get('行业趋势', False) else '❌ 走弱'} (行业近5日均涨跌: {analysis.get('行业平均涨跌幅', '-')}%)")
+                print(f"📊 大盘趋势: {'✅ 走强' if analysis.get('大盘趋势', False) else '❌ 走弱'}")
                 print(f"🎯 三振共振: {'✅ 成立' if analysis.get('三振共振', False) else '❌ 不成立'}")
+                
+                print("\n📅 多周期分析:")
+                print(f"📊 周线: {analysis.get('周线趋势', '未知')} (最新价: {analysis.get('周线最新价', '-')}, MA20: {analysis.get('周线MA20', '-')})")
+                print(f"📅 月线: {analysis.get('月线趋势', '未知')} (最新价: {analysis.get('月线最新价', '-')}, MA10: {analysis.get('月线MA10', '-')})")
+                print(f"🔗 多周期共振: {'✅' if analysis.get('多周期共振', False) else '❌'}")
+                
                 print(f"🚀 主升浪状态: {analysis.get('主升浪状态', '未知')}")
                 print(f"💪 平台状态: {analysis.get('平台状态', '未知')}")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")
                 print(f"🎲 筹码集中度: {analysis.get('筹码集中度', '未知')}")
+                
+                print("\n📋 主升浪8项指标对比表:")
+                checklist = analysis.get('主升浪指标对比', {})
+                for key in ['长期横盘3个月以上', '60日均线开始向上', '股价突破平台',
+                            '放量超20日均量2倍', '回踩不破+MACD零轴金叉', 'RSI>50继续走强',
+                            '主力资金连续流入', '行业板块同步走强']:
+                    mark = '✅' if checklist.get(key, False) else '❌'
+                    print(f"  {mark} {key}")
+                print(f"📊 满足 {analysis.get('主升浪满足数量', 0)}/8 项, 综合判断: {analysis.get('主升浪综合判断', '未知')}")
                 
                 print("\n📈 技术指标（最新交易日）:")
                 print(f"💰 最新价: {analysis.get('最新价', 0):.2f}  换手率: {analysis.get('换手率', 0):.2f}%  量比: {analysis.get('量比', 0):.2f}")
