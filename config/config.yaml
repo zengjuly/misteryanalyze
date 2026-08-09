@@ -1,7 +1,8 @@
 # Mystery趋势交易分析系统配置文件
 
 # 基础配置
-output_dir: "output"
+# 输出目录：分析结果保存目录（默认 /home/ai/ai_runner/stock/output，该目录为git仓库，每次生成后自动同步远端）
+output_dir: "/home/ai/ai_runner/stock/output"
 log_level: "INFO"
 log_file: "logs/stock_analysis.log"
 

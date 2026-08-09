@@ -430,13 +430,16 @@ class MysteryLogic:
                 checklist['详情'].append("成交量数据不足")
             
             # 5. 回踩平台不破 + MACD在零轴附近金叉
+            #    回踩对象 = 近20日平台支撑位（近20日最低价/箱体下沿）
             if len(data) >= 2:
                 yesterday = data.iloc[-2]
-                # 回踩不破：前一日低点未破近20日平台低点
+                # 平台支撑位 = 近20日最低价（箱体下沿）
                 platform_low = data['最低价'].tail(20).min() if len(data) >= 20 else data['最低价'].min()
-                pullback_ok = True
-                if pd.notna(yesterday['最低价']) and pd.notna(platform_low):
-                    pullback_ok = yesterday['最低价'] >= platform_low * 0.98  # 允许2%误差
+                platform_high = data['最高价'].tail(20).max() if len(data) >= 20 else data['最高价'].max()
+                pullback_ok = False
+                if pd.notna(yesterday['最低价']) and pd.notna(platform_low) and platform_low > 0:
+                    # 回踩不破：昨/前日低点未有效跌破平台支撑位（允许2%误差）
+                    pullback_ok = yesterday['最低价'] >= platform_low * 0.98
                 
                 # MACD零轴附近金叉
                 macd_golden = False
@@ -445,7 +448,7 @@ class MysteryLogic:
                     signal_now = latest.get('MACD_Signal', 0)
                     macd_prev = yesterday.get('MACD', 0)
                     signal_prev = yesterday.get('MACD_Signal', 0)
-                    # 金叉：MACD上穿信号线；零轴附近：|MACD| < 1.0（简化，按价格比例）
+                    # 金叉：MACD上穿信号线；零轴附近：|MACD| < 股价的1%
                     near_zero = abs(macd_now) < (latest['收盘价'] * 0.01) if pd.notna(latest['收盘价']) else False
                     golden_cross = (macd_now > signal_now) and (macd_prev <= signal_prev)
                     if golden_cross or (macd_now > signal_now and near_zero):
@@ -453,10 +456,14 @@ class MysteryLogic:
                 
                 if pullback_ok and macd_golden:
                     checklist['回踩不破+MACD零轴金叉'] = True
-                    checklist['详情'].append("回踩平台未破，MACD零轴附近金叉")
+                    checklist['详情'].append(
+                        f"回踩平台支撑{platform_low:.2f}未破(箱体{platform_low:.2f}-{platform_high:.2f})，"
+                        f"MACD零轴附近金叉")
                 else:
                     checklist['详情'].append(
-                        f"回踩{'未破' if pullback_ok else '破位'}/MACD{'金叉' if macd_golden else '未金叉'}")
+                        f"回踩{'未破' if pullback_ok else '破位'}平台支撑{platform_low:.2f}"
+                        f"(箱体{platform_low:.2f}-{platform_high:.2f})/"
+                        f"MACD{'金叉' if macd_golden else '未金叉'}")
             else:
                 checklist['详情'].append("数据不足2日")
             

@@ -34,6 +34,13 @@ class StockAnalysisSystem:
         # 初始化日志系统
         self._setup_logging()
         
+        # 确保输出目录存在（支持相对/绝对路径）
+        output_dir = self.config['output_dir']
+        if not os.path.isabs(output_dir):
+            output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        self.config['output_dir'] = output_dir
+        
         # 初始化各个模块
         self.baostock_client = BaostockClient()
         self.data_processor = DataProcessor(self.baostock_client)
@@ -220,6 +227,9 @@ class StockAnalysisSystem:
                 
                 self.logger.info("✅ 股票分析完成！")
                 
+                # git同步输出目录到远端（若为git仓库）
+                git_synced = self._sync_output_to_git(excel_path, html_path, summary_path, dashboard_path)
+                
                 return {
                     'analysis_results': final_results,
                     'summary': summary,
@@ -227,7 +237,8 @@ class StockAnalysisSystem:
                     'excel_report': excel_path,
                     'html_report': html_path,
                     'summary_report': summary_path,
-                    'dashboard': dashboard_path
+                    'dashboard': dashboard_path,
+                    'git_synced': git_synced
                 }
                 
             finally:
@@ -304,9 +315,12 @@ class StockAnalysisSystem:
         :param industry_map: 行业映射 {'code_map':..., 'industry_codes':...}
         :param processed_data: 已获取的股票数据（优先使用缓存）
         :param max_samples: 抽样股票数量
-        :return: {'趋势': True/False/None, '行业': 行业名, '平均涨跌幅': x, '样本数': n}
+        :return: {'趋势': True/False/None, '行业': 行业名, '平均涨跌幅': x, '样本数': n,
+                  '板块评级': str, '近5日': x, '近10日': x, '近20日': x, '样本股票': [名称]}
         """
-        result = {'趋势': None, '行业': '未知', '平均涨跌幅': None, '样本数': 0}
+        result = {'趋势': None, '行业': '未知', '平均涨跌幅': None, '样本数': 0,
+                  '板块评级': '数据不足', '近5日': None, '近10日': None, '近20日': None,
+                  '样本股票': []}
         try:
             code_map = industry_map.get('code_map', {})
             industry_codes = industry_map.get('industry_codes', {})
@@ -324,8 +338,9 @@ class StockAnalysisSystem:
             if not peers:
                 return result
             
-            # 计算同行业样本股票的近5日平均涨跌幅
-            pct_changes = []
+            # 计算同行业样本股票的多周期平均涨跌幅
+            pct_5d, pct_10d, pct_20d = [], [], []
+            sample_names = []
             for peer in peers:
                 # 优先使用已获取的数据
                 peer_short = peer.replace('.', '')  # sh.600150 -> sh600150
@@ -333,27 +348,58 @@ class StockAnalysisSystem:
                 daily = peer_data.get('daily') if isinstance(peer_data, dict) else None
                 if daily is None or daily.empty:
                     try:
-                        # 获取最近10天数据
+                        # 获取最近30天数据
                         from datetime import timedelta
                         end = datetime.now().strftime('%Y-%m-%d')
-                        start = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+                        start = (datetime.now() - timedelta(days=45)).strftime('%Y-%m-%d')
                         daily = self.baostock_client.get_daily_data(peer, start, end)
                     except Exception:
                         daily = None
                 
                 if daily is not None and not daily.empty and '涨跌幅' in daily.columns:
-                    recent_pct = daily['涨跌幅'].tail(5).dropna()
-                    if len(recent_pct) > 0:
-                        pct_changes.append(recent_pct.mean())
+                    pct_series = daily['涨跌幅'].dropna()
+                    if len(pct_series) >= 5:
+                        pct_5d.append(pct_series.tail(5).mean())
+                    if len(pct_series) >= 10:
+                        pct_10d.append(pct_series.tail(10).mean())
+                    if len(pct_series) >= 20:
+                        pct_20d.append(pct_series.tail(20).mean())
+                    # 样本股票名称
+                    try:
+                        sample_names.append(self.baostock_client.get_stock_name(peer))
+                    except Exception:
+                        sample_names.append(peer)
             
-            if pct_changes:
-                avg_pct = sum(pct_changes) / len(pct_changes)
-                result['平均涨跌幅'] = round(float(avg_pct), 2)
-                result['样本数'] = len(pct_changes)
-                result['趋势'] = bool(avg_pct > 0)  # 转为Python bool，避免np.bool_的is比较问题
+            if pct_5d:
+                avg_5d = float(sum(pct_5d) / len(pct_5d))
+                result['平均涨跌幅'] = round(avg_5d, 2)
+                result['近5日'] = round(avg_5d, 2)
+                result['样本数'] = len(pct_5d)
+                result['样本股票'] = sample_names
+                if pct_10d:
+                    result['近10日'] = round(float(sum(pct_10d) / len(pct_10d)), 2)
+                if pct_20d:
+                    result['近20日'] = round(float(sum(pct_20d) / len(pct_20d)), 2)
+                
+                # 板块评级（综合多周期表现）
+                result['趋势'] = bool(avg_5d > 0)  # 转为Python bool，避免np.bool_的is比较问题
+                trend_10 = (result['近10日'] or 0)
+                trend_20 = (result['近20日'] or 0)
+                if avg_5d > 0.5 and trend_10 > 0 and trend_20 > 0:
+                    result['板块评级'] = '强势上涨'
+                elif avg_5d > 0 and trend_10 > 0:
+                    result['板块评级'] = '稳步走强'
+                elif avg_5d > 0:
+                    result['板块评级'] = '短期走强'
+                elif avg_5d < -0.5 and trend_10 < 0:
+                    result['板块评级'] = '弱势下跌'
+                elif avg_5d < 0:
+                    result['板块评级'] = '短期走弱'
+                else:
+                    result['板块评级'] = '震荡整理'
                 self.logger.info(
-                    f"🏭 {stock_code} 行业[{industry}] 样本{len(pct_changes)}只, 近5日平均涨跌{avg_pct:.2f}% "
-                    f"{'↑走强' if avg_pct > 0 else '↓走弱'}")
+                    f"🏭 {stock_code} 行业[{industry}] 样本{len(pct_5d)}只, 近5日{avg_5d:.2f}%, "
+                    f"评级[{result['板块评级']}]")
         except Exception as e:
             self.logger.warning(f"⚠️ 行业趋势分析异常 {stock_code}: {e}")
         return result
@@ -415,11 +461,76 @@ class StockAnalysisSystem:
             self.logger.error(f"❌ 多周期分析异常: {e}")
         return multi_period
     
+    def _sync_output_to_git(self, *report_paths) -> bool:
+        """
+        将生成的报告同步到输出目录的git仓库并推送远端
+        :param report_paths: 生成的报告文件路径
+        :return: 是否同步成功
+        """
+        import subprocess as sp
+        output_dir = self.config['output_dir']
+        try:
+            # 检查是否为git仓库
+            check = sp.run(['git', '-C', output_dir, 'rev-parse', '--is-inside-work-tree'],
+                          capture_output=True, text=True, timeout=30)
+            if check.returncode != 0:
+                self.logger.warning(f"⚠️ {output_dir} 不是git仓库，跳过git同步")
+                return False
+            
+            # 检查是否有远端
+            remote = sp.run(['git', '-C', output_dir, 'remote'],
+                           capture_output=True, text=True, timeout=30)
+            has_remote = bool(remote.stdout.strip())
+            
+            # git add 生成的报告文件
+            paths = [os.path.basename(p) for p in report_paths if p]
+            if not paths:
+                # 没有指定文件则添加全部
+                sp.run(['git', '-C', output_dir, 'add', '-A'], capture_output=True, text=True, timeout=30)
+            else:
+                sp.run(['git', '-C', output_dir, 'add', '--'] + paths,
+                      capture_output=True, text=True, timeout=30)
+            
+            # 检查是否有变更需要提交
+            status = sp.run(['git', '-C', output_dir, 'status', '--porcelain'],
+                          capture_output=True, text=True, timeout=30)
+            if not status.stdout.strip():
+                self.logger.info("📦 输出目录无新变更，跳过提交")
+                return True
+            
+            # 提交
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            commit_msg = f"📊 股票分析报告更新 {timestamp}"
+            commit = sp.run(['git', '-C', output_dir, 'commit', '-m', commit_msg],
+                          capture_output=True, text=True, timeout=60)
+            if commit.returncode != 0:
+                self.logger.error(f"❌ git提交失败: {commit.stderr.strip()}")
+                return False
+            
+            self.logger.info(f"✅ git提交成功: {commit_msg}")
+            
+            # 推送到远端
+            if has_remote:
+                push = sp.run(['git', '-C', output_dir, 'push'],
+                            capture_output=True, text=True, timeout=120)
+                if push.returncode == 0:
+                    self.logger.info("🚀 git推送远端成功")
+                else:
+                    self.logger.warning(f"⚠️ git推送远端失败: {push.stderr.strip()[:200]}")
+            else:
+                self.logger.warning("⚠️ 输出目录未配置远端，仅本地提交")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ git同步异常: {e}")
+            return False
+
     def _get_all_financial_data(self, processed_data: Dict) -> Dict:
         """
-        获取所有股票的基础财务数据
+        获取所有股票的基础财务数据和股票名称
         :param processed_data: 处理后的股票数据
-        :return: {股票代码: 财务数据字典}
+        :return: {股票代码: 财务数据字典(含'股票名称')}
         """
         financial_map = {}
         try:
@@ -430,6 +541,8 @@ class StockAnalysisSystem:
                     current_price = float(daily_data.iloc[-1].get('收盘价', 0) or 0)
                 
                 financial = self.baostock_client.get_financial_data(stock_code, current_price)
+                # 一并获取真实股票名称
+                financial['股票名称'] = self.baostock_client.get_stock_name(stock_code)
                 financial_map[stock_code] = financial
         except Exception as e:
             self.logger.error(f"❌ 获取财务数据异常: {e}")
@@ -464,6 +577,10 @@ class StockAnalysisSystem:
                 industry_trend = industry_info.get('趋势')  # True/False/None
                 industry = industry_info.get('行业', '未知')
                 industry_avg_pct = industry_info.get('平均涨跌幅')
+                industry_rating = industry_info.get('板块评级', '数据不足')
+                industry_pct_10d = industry_info.get('近10日')
+                industry_pct_20d = industry_info.get('近20日')
+                industry_samples = industry_info.get('样本股票', [])
                 
                 # 三振共振分析（真实大盘指数 + 真实行业趋势）
                 resonance_analysis = self.mystery_logic.three_resonance_analysis(
@@ -491,13 +608,16 @@ class StockAnalysisSystem:
                 # 财务数据
                 financial = financial_data_map.get(stock_code, {})
                 
+                # 真实股票名称（优先财务数据中获取的名称）
+                stock_name = financial.get('股票名称') or stock_data.get('name', stock_code)
+                
                 # 多周期数据
                 multi_period = multi_period_map.get(stock_code, {})
                 
                 # 汇总分析结果
                 analysis_results[stock_code] = {
                     '股票代码': stock_code,
-                    '股票名称': stock_data.get('name', stock_code),
+                    '股票名称': stock_name,
                     '综合评分': comprehensive.get('综合评分', 0),
                     '基础过滤': basic_passed,
                     '基础过滤详情': basic_errors,
@@ -516,6 +636,11 @@ class StockAnalysisSystem:
                     '筹码集中度': technical_detail.get('筹码集中度', '未知'),
                     # 所属板块与行业趋势
                     '所属板块': industry,
+                    '板块评级': industry_rating,
+                    '板块近5日': industry_avg_pct,
+                    '板块近10日': industry_pct_10d,
+                    '板块近20日': industry_pct_20d,
+                    '板块样本': industry_samples,
                     '行业平均涨跌幅': industry_avg_pct,
                     # 主升浪8项指标对比表
                     '主升浪指标对比': bull_wave_checklist,
@@ -673,7 +798,12 @@ class StockAnalysisSystem:
                 
                 print("\n🎯 三振共振:")
                 print(f"📈 个股趋势: {'✅ 走强' if analysis.get('个股趋势', False) else '❌ 走弱'}")
-                print(f"🏭 行业趋势: {'✅ 走强' if analysis.get('行业趋势', False) else '❌ 走弱'} (行业近5日均涨跌: {analysis.get('行业平均涨跌幅', '-')}%)")
+                print(f"🏭 行业趋势: {'✅ 走强' if analysis.get('行业趋势', False) else '❌ 走弱'} "
+                      f"评级[{analysis.get('板块评级', '数据不足')}]")
+                print(f"   📊 板块近5日: {analysis.get('板块近5日', '-')}% | "
+                      f"近10日: {analysis.get('板块近10日', '-')}% | 近20日: {analysis.get('板块近20日', '-')}%")
+                if analysis.get('板块样本'):
+                    print(f"   📋 板块样本: {', '.join(map(str, analysis.get('板块样本', [])[:3]))}")
                 print(f"📊 大盘趋势: {'✅ 走强' if analysis.get('大盘趋势', False) else '❌ 走弱'}")
                 print(f"🎯 三振共振: {'✅ 成立' if analysis.get('三振共振', False) else '❌ 不成立'}")
                 

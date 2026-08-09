@@ -80,6 +80,26 @@ class BaostockClient:
             bs.logout()
             self.logger.info("👋 Baostock已退出登录")
     
+    def get_stock_name(self, stock_code: str) -> str:
+        """
+        获取股票名称
+        :param stock_code: 股票代码（支持多种格式）
+        :return: 股票名称，获取失败返回股票代码
+        """
+        try:
+            stock_code = self.normalize_stock_code(stock_code)
+            result = bs.query_stock_basic(code=stock_code)
+            if result.error_code == '0':
+                data = result.get_data()
+                if data is not None and not data.empty and 'code_name' in data.columns:
+                    name = str(data.iloc[0]['code_name'])
+                    if name and name != 'nan':
+                        return name
+            self.logger.warning(f"⚠️ 获取 {stock_code} 股票名称失败: {result.error_msg}")
+        except Exception as e:
+            self.logger.warning(f"⚠️ 获取 {stock_code} 股票名称异常: {e}")
+        return str(stock_code)
+    
     def get_stock_list(self) -> pd.DataFrame:
         """获取A股股票列表"""
         try:

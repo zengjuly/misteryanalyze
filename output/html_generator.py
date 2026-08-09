@@ -513,7 +513,8 @@ class HTMLGenerator:
                     <h4>三振共振</h4>
                     <ul>
                         <li>个股趋势: {'✅ 走强' if result.get('个股趋势', False) else '❌ 走弱'}</li>
-                        <li>行业趋势: {'✅ 走强' if result.get('行业趋势', False) else '❌ 走弱'} (近5日均涨跌 {result.get('行业平均涨跌幅', '-')}%)</li>
+                        <li>行业趋势: {'✅ 走强' if result.get('行业趋势', False) else '❌ 走弱'} · 板块评级: {result.get('板块评级', '数据不足')}</li>
+                        <li>板块表现: 近5日 {result.get('板块近5日', '-')}% / 近10日 {result.get('板块近10日', '-')}% / 近20日 {result.get('板块近20日', '-')}%</li>
                         <li>大盘趋势: {'✅ 走强' if result.get('大盘趋势', False) else '❌ 走弱'}</li>
                         <li>三振共振: {'✅ 成立' if result.get('三振共振', False) else '❌ 不成立'}</li>
                     </ul>
