@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.2.0
+- **版本**: 1.3.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-12
 - **文档类型**: 系统设计文档
@@ -144,7 +144,7 @@ class MysteryLogic:
     def basic_filter(data: pd.DataFrame) -> Tuple[bool, List[str]]   # 基础过滤（年线/60日线/均线排列）
     def three_resonance_analysis(data, market_data: dict, industry_trend: bool) -> dict  # 三振共振
     def main_bull_wave_analysis(data: pd.DataFrame) -> dict          # 主升浪状态+判定依据
-    def platform_breakthrough_analysis(data: pd.DataFrame, stock_code: str) -> dict  # 平台突破（自适应+固定双判定）
+    def platform_breakthrough_analysis(data: pd.DataFrame, stock_code: str, weekly_data=None, monthly_data=None) -> dict  # 平台突破（自适应+固定+周/月线箱体）
     def main_bull_wave_checklist(data: pd.DataFrame, industry_trend: bool) -> dict   # 主升浪8项指标
     def technical_detail_capture(data: pd.DataFrame) -> dict         # 破五反五/筹码集中度
     def comprehensive_analysis(data: pd.DataFrame, market_data=None) -> dict  # 综合评分+建议
@@ -388,6 +388,39 @@ class ExceptionHandler:
 - 30/60分钟（Window≈20）：突破瞬间量能"三振"确认（分时数据，系统当前未接入，预留）
 
 **输出**：`自适应周期 = {adaptive_n, atr_m, k, avg_turnover, theoretical_n}`（随报告展示）
+
+---
+
+### 3.5.3 多周期箱体分析（周线/月线）— 非标准指标 ★★
+
+在日线平台基础上，叠加**周线/月线箱体**（`_analyze_cycle_box`），识别多周期级别的突破/回踩/触底信号：
+
+**① 箱体定义**：
+- 周线箱体：近 20 根周K 的 `[最低价最小值, 最高价最大值]`（约 5 个月）
+- 月线箱体：近 20 根月K 的 `[最低价最小值, 最高价最大值]`（约 20 个月）
+- 当前价 = 最新一期收盘价
+
+**② 位置判断**（容差 2%）：
+- `当前 > 上沿×1.02` → 上沿上方
+- `当前 ≥ 上沿×0.98` → 上沿附近
+- `当前 ≤ 下沿×1.02` → 下沿附近
+- `当前 < 下沿×0.98` → 下沿下方
+- 其他 → 箱体内
+
+**③ 状态识别**：
+| 状态 | 触发条件 | 含义 |
+|---|---|---|
+| 突破上沿 | 位置=上沿上方 且 前一期收盘 ≤ 上沿 | 刚突破箱体上沿（买入信号） |
+| 回踩上沿 | 位置=上沿附近 | 突破后回踩上沿不破（确认支撑） |
+| 跌到下沿 | 位置=下沿附近 | 跌至箱体下沿（观察支撑/买横） |
+| 跌破下沿 | 位置=下沿下方 | 有效跌破箱体（风险信号） |
+| 箱体内震荡 | 其他 | 箱体内部整理 |
+
+**④ 输出**：`周线箱体/月线箱体 = {周期, 上沿, 下沿, 当前价, 位置, 状态, 距上沿%, 距下沿%, 详情}`，
+汇总为 `多周期箱体状态 = "周线:突破上沿(35.6) | 月线:回踩上沿(32.1)"`
+
+平台突破分析（`platform_breakthrough_analysis`）新增参数 `weekly_data`/`monthly_data`，
+在自适应平台与固定箱体之后进行多周期箱体分析，随报告展示。
 
 ---
 
@@ -764,6 +797,7 @@ class ExceptionHandler:
 - 三振共振（个股+行业+大盘真实数据）判断
 - 自适应 VAP-ATR 平台中枢（POC 筹码控制点 + 波动率自适应通道，A股涨跌停修正）
 - 自适应检测周期（换手率驱动: N=70%/日均换手, 双周期嵌套快ATR窗口, k自适应）
+- 多周期箱体分析（周线/月线上下沿，识别突破上沿/回踩上沿/跌到下沿/跌破下沿）
 - 主升浪状态判定（带判定依据）+ 主升浪8项指标对比表
 - 多周期（日/周/月线）共振分析
 - 基本面数据（ROE/EPS/PE/PB/股息率）+ 板块评级

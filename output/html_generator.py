@@ -551,6 +551,11 @@ class HTMLGenerator:
                         {f'<li style="color:#8e44ad;">自适应VAP-ATR: POC {result.get("自适应平台", {}).get("POC", "-")} | 上轨 {result.get("自适应平台", {}).get("自适应上轨", "-")} | 下轨 {result.get("自适应平台", {}).get("自适应下轨", "-")}</li>' if result.get('自适应平台') and result.get('自适应平台', {}).get('POC') is not None else ''}
                         {f'<li style="color:#8e44ad;">自适应周期: N={result.get("自适应平台", {}).get("自适应周期", {}).get("adaptive_n", "-")}日 (日均换手{result.get("自适应平台", {}).get("自适应周期", {}).get("avg_turnover", "-")}%) | 快ATR={result.get("自适应平台", {}).get("自适应周期", {}).get("atr_m", "-")}日 k={result.get("自适应平台", {}).get("自适应周期", {}).get("k", "-")}</li>' if result.get('自适应平台') and result.get('自适应平台', {}).get('自适应周期') else ''}
                     </ul>
+                    <h4>多周期箱体</h4>
+                    <ul>
+                        {f'<li>周线箱体: 下沿 {result.get("周线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("周线箱体", {}).get("上沿", "-")} | 当前 {result.get("周线箱体", {}).get("当前价", "-")} | 状态: {result.get("周线箱体", {}).get("状态", "-")}</li>' if result.get('周线箱体') and result.get('周线箱体', {}).get('上沿') is not None else ''}
+                        {f'<li>月线箱体: 下沿 {result.get("月线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("月线箱体", {}).get("上沿", "-")} | 当前 {result.get("月线箱体", {}).get("当前价", "-")} | 状态: {result.get("月线箱体", {}).get("状态", "-")}</li>' if result.get('月线箱体') and result.get('月线箱体', {}).get('上沿') is not None else ''}
+                    </ul>
                     <h4>分析详情</h4>
                     <ul>
                         <li>基础过滤: {'✅ 通过' if result.get('基础过滤', False) else '❌ 不通过'}</li>

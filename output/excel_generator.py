@@ -251,6 +251,21 @@ class ExcelGenerator:
                     detail_data.append(['买横信号', '✅' if result.get('买横信号', False) else '❌', ''])
                     detail_data.append(['', '', ''])
                     
+                    # 多周期箱体（周线/月线）
+                    for box_key, box_name in [('周线箱体', '周线箱体'), ('月线箱体', '月线箱体')]:
+                        box = result.get(box_key)
+                        if box and box.get('上沿') is not None:
+                            detail_data.append([box_name, '', ''])
+                            detail_data.append([f'{box_name}上沿', box.get('上沿'), ''])
+                            detail_data.append([f'{box_name}下沿', box.get('下沿'), ''])
+                            detail_data.append([f'{box_name}当前价', box.get('当前价'), ''])
+                            detail_data.append([f'{box_name}状态', box.get('状态'), ''])
+                            detail_data.append([f'{box_name}距上沿', f"{box.get('距上沿')}%", ''])
+                            detail_data.append([f'{box_name}距下沿', f"{box.get('距下沿')}%", ''])
+                    if result.get('多周期箱体状态'):
+                        detail_data.append(['多周期箱体状态', result.get('多周期箱体状态'), ''])
+                    detail_data.append(['', '', ''])
+                    
                     # 技术细节
                     detail_data.append(['技术细节', '', ''])
                     detail_data.append(['破五反五', '✅' if result.get('破五反五', False) else '❌', ''])

@@ -281,12 +281,118 @@ class MysteryLogic:
             self.logger.error(f"❌ 主升浪分析异常: {e}")
             return {'主升浪状态': '异常', '详情': [f"分析异常: {e}"]}
     
-    def platform_breakthrough_analysis(self, data: pd.DataFrame, stock_code: str = "") -> Dict[str, Any]:
+    def _analyze_cycle_box(self, cycle_data: pd.DataFrame, cycle_name: str,
+                           lookback: int = 20) -> Dict[str, Any]:
+        """
+        周线/月线箱体分析（多周期箱体：上沿/下沿 + 状态识别）
+        :param cycle_data: 周线或月线K线数据（含 最高价/最低价/收盘价）
+        :param cycle_name: 周期名称（'周线'/'月线'）
+        :param lookback: 箱体统计周期（周线默认20周≈5个月，月线默认20月）
+        :return: {周期, 上沿, 下沿, 当前价, 位置, 状态, 距上沿%, 距下沿%, 详情}
+        """
+        result = {
+            '周期': cycle_name,
+            '上沿': None,
+            '下沿': None,
+            '当前价': None,
+            '位置': '未知',
+            '状态': '未知',
+            '距上沿': None,
+            '距下沿': None,
+            '详情': [],
+        }
+        try:
+            if cycle_data is None or cycle_data.empty or len(cycle_data) < 5:
+                result['详情'].append(f"{cycle_name}数据不足，无法分析箱体")
+                return result
+
+            # 列名兼容（中文/英文）
+            col_high = '最高价' if '最高价' in cycle_data.columns else 'high'
+            col_low = '最低价' if '最低价' in cycle_data.columns else 'low'
+            col_close = '收盘价' if '收盘价' in cycle_data.columns else 'close'
+
+            recent = cycle_data.tail(lookback)
+            box_high = recent[col_high].max()
+            box_low = recent[col_low].min()
+            current = cycle_data.iloc[-1][col_close]
+
+            if pd.isna(box_high) or pd.isna(box_low) or pd.isna(current):
+                result['详情'].append(f"{cycle_name}箱体数据缺失")
+                return result
+
+            box_high = float(box_high)
+            box_low = float(box_low)
+            current = float(current)
+
+            result['上沿'] = round(box_high, 2)
+            result['下沿'] = round(box_low, 2)
+            result['当前价'] = round(current, 2)
+            result['距上沿'] = round((current - box_high) / box_high * 100, 2) if box_high > 0 else None
+            result['距下沿'] = round((current - box_low) / box_low * 100, 2) if box_low > 0 else None
+
+            # 位置判断（容差2%）
+            tolerance = 0.02
+            if current > box_high * (1 + tolerance):
+                result['位置'] = '上沿上方'
+            elif current >= box_high * (1 - tolerance):
+                result['位置'] = '上沿附近'
+            elif current < box_low * (1 - tolerance):
+                result['位置'] = '下沿下方'
+            elif current <= box_low * (1 + tolerance):
+                result['位置'] = '下沿附近'
+            else:
+                result['位置'] = '箱体内'
+
+            # 状态识别：突破上沿 / 回踩上沿 / 跌到下沿 / 箱体内
+            if result['位置'] == '上沿上方':
+                # 检查是否刚突破（前一期在上沿内或下方）
+                prev = cycle_data.iloc[-2][col_close]
+                if not pd.isna(prev) and float(prev) <= box_high:
+                    result['状态'] = '突破上沿'
+                    result['详情'].append(
+                        f"{cycle_name}突破上沿: 收盘{current:.2f} > 箱体上沿{box_high:.2f}"
+                        f"（前值{float(prev):.2f} ≤ 上沿）")
+                else:
+                    result['状态'] = '上沿上方'
+                    result['详情'].append(
+                        f"{cycle_name}运行于上沿上方: 收盘{current:.2f} > 上沿{box_high:.2f}")
+            elif result['位置'] == '上沿附近':
+                result['状态'] = '回踩上沿'
+                result['详情'].append(
+                    f"{cycle_name}回踩上沿: 收盘{current:.2f} 贴近箱体上沿{box_high:.2f}"
+                    f"（回踩不破，距上沿{result['距上沿']:.1f}%）")
+            elif result['位置'] == '下沿附近':
+                result['状态'] = '跌到下沿'
+                result['详情'].append(
+                    f"{cycle_name}跌到下沿: 收盘{current:.2f} 贴近箱体下沿{box_low:.2f}"
+                    f"（距下沿{result['距下沿']:.1f}%）")
+            elif result['位置'] == '下沿下方':
+                result['状态'] = '跌破下沿'
+                result['详情'].append(
+                    f"{cycle_name}跌破下沿: 收盘{current:.2f} < 箱体下沿{box_low:.2f}")
+            else:
+                result['状态'] = '箱体内震荡'
+                result['详情'].append(
+                    f"{cycle_name}箱体内震荡: 收盘{current:.2f} 处于箱体[{box_low:.2f}, {box_high:.2f}]内")
+
+            result['详情'].append(
+                f"{cycle_name}箱体(近{lookback}期): 下沿{box_low:.2f} ~ 上沿{box_high:.2f}")
+
+        except Exception as e:
+            result['详情'].append(f"{cycle_name}箱体分析异常: {e}")
+        return result
+
+    def platform_breakthrough_analysis(self, data: pd.DataFrame, stock_code: str = "",
+                                       weekly_data: pd.DataFrame = None,
+                                       monthly_data: pd.DataFrame = None) -> Dict[str, Any]:
         """
         平台突破与"买横"战法
         使用自适应VAP-ATR平台（docs/design.md gemmi优化），融合固定箱体双重判定
+        + 多周期箱体（周线/月线上下沿，识别突破/回踩/跌到下沿）
         :param data: 包含技术指标的数据
         :param stock_code: 股票代码（用于判断涨跌幅限制）
+        :param weekly_data: 周线K线数据（用于周线箱体分析）
+        :param monthly_data: 月线K线数据（用于月线箱体分析）
         :return: 平台突破分析结果
         """
         try:
@@ -297,6 +403,8 @@ class MysteryLogic:
                 '平台范围': None,  # 平台箱体区间
                 '固定箱体': None,  # 固定20日箱体
                 '自适应平台': None,  # 自适应VAP-ATR平台数据
+                '周线箱体': None,  # 周线箱体分析
+                '月线箱体': None,  # 月线箱体分析
                 '详情': []
             }
             
@@ -325,6 +433,22 @@ class MysteryLogic:
                                               f"上轨={adaptive['自适应上轨']}, 下轨={adaptive['自适应下轨']}")
             except Exception as e:
                 result['详情'].append(f"自适应平台分析异常(降级固定箱体): {e}")
+            
+            # ============ 多周期箱体分析（周线/月线上下沿） ============
+            if weekly_data is not None:
+                result['周线箱体'] = self._analyze_cycle_box(weekly_data, '周线', lookback=20)
+            if monthly_data is not None:
+                result['月线箱体'] = self._analyze_cycle_box(monthly_data, '月线', lookback=20)
+            
+            # 多周期箱体状态汇总（供报告展示）
+            cycle_states = []
+            for key, name in [('周线箱体', '周线'), ('月线箱体', '月线')]:
+                box = result.get(key)
+                if box and box.get('状态') not in ('未知',):
+                    cycle_states.append(f"{name}:{box.get('状态')}({box.get('上沿')})")
+            if cycle_states:
+                result['多周期箱体状态'] = ' | '.join(cycle_states)
+                result['详情'].append(f"📊 多周期箱体: {' | '.join(cycle_states)}")
             
             # ============ 固定箱体分析（兼容保留，作为补充校验） ============
             # 获取最近20天数据

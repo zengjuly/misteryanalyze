@@ -593,8 +593,14 @@ class StockAnalysisSystem:
                 bull_wave_checklist = self.mystery_logic.main_bull_wave_checklist(
                     indicators, industry_trend)
                 
-                # 平台突破分析
-                platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(indicators, stock_code)
+                # 平台突破分析（含周线/月线箱体分析）
+                weekly_data = None
+                monthly_data = None
+                if isinstance(processed_data.get(stock_code), dict):
+                    weekly_data = processed_data[stock_code].get('weekly')
+                    monthly_data = processed_data[stock_code].get('monthly')
+                platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(
+                    indicators, stock_code, weekly_data, monthly_data)
                 
                 # 技术细节捕捉（破五反五、筹码集中度）
                 technical_detail = self.mystery_logic.technical_detail_capture(indicators)
@@ -634,6 +640,9 @@ class StockAnalysisSystem:
                     '平台范围': platform_breakthrough.get('平台范围'),
                     '平台详情': platform_breakthrough.get('详情', []),
                     '自适应平台': platform_breakthrough.get('自适应平台'),
+                    '周线箱体': platform_breakthrough.get('周线箱体'),
+                    '月线箱体': platform_breakthrough.get('月线箱体'),
+                    '多周期箱体状态': platform_breakthrough.get('多周期箱体状态', ''),
                     '建议操作': comprehensive.get('建议操作', '观望'),
                     '止损位': comprehensive.get('止损位'),
                     '破五反五': technical_detail.get('破五反五', False),
@@ -839,6 +848,12 @@ class StockAnalysisSystem:
                         print(f"   ⏱️ 自适应周期(换手率驱动): N={ap_cycle.get('adaptive_n')}日 "
                               f"(日均换手{ap_cycle.get('avg_turnover')}%, 理论N={ap_cycle.get('theoretical_n')}) | "
                               f"快ATR={ap_cycle.get('atr_m')}日 k={ap_cycle.get('k')}")
+                # 多周期箱体（周线/月线）
+                for box_key, box_name in [('周线箱体', '周线'), ('月线箱体', '月线')]:
+                    box = analysis.get(box_key)
+                    if box and box.get('上沿') is not None:
+                        print(f"   📐 {box_name}箱体: 下沿 {box.get('下沿')} ~ 上沿 {box.get('上沿')} | "
+                              f"当前 {box.get('当前价')} | 状态: {box.get('状态')}")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")
