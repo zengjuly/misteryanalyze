@@ -21,11 +21,16 @@
 - 具备良好的扩展性和维护性
 
 ### 1.3 核心特性
-- **数据获取**: 基于 baostock 的股票数据获取
-- **技术指标**: 均线、趋势、动能指标计算
-- **Mystery理论**: 三振共振、主升浪识别、形态识别
-- **智能分析**: 综合评分系统、投资建议
-- **多格式输出**: Excel、HTML、文本报告
+- **数据获取**: 基于 baostock 的股票数据获取（日线/周线/月线/指数/行业/财务/分红）
+- **技术指标**: 均线、趋势、动能指标计算（MA/MACD/RSI/量比/OBV 等）
+- **Mystery理论**: 三振共振（个股+行业+大盘）、主升浪识别、形态识别
+- **自适应平台**: VAP-ATR 平台中枢（POC 筹码控制点 + 波动率自适应通道，A股涨跌停修正）
+- **智能分析**: 综合评分系统、投资建议、主升浪8项指标对比表
+- **多周期分析**: 日线+周线+月线共振判断
+- **基本面数据**: ROE/EPS/PE/PB/股息率 + 所属板块与板块评级
+- **多格式输出**: Excel、HTML、文本报告（文件名规则：单股含股票名称，每日加"每日"前缀）
+- **自动同步**: 报告生成后自动 git 提交并推送远端（输出目录为独立 git 仓库）
+- **定时任务**: 支持 cron 每日自动分析（周一至五 15:30）
 
 ## 2. 系统架构
 
@@ -75,19 +80,30 @@
 - `data_processor.py`: 数据预处理和清洗
 - `__init__.py`: 模块初始化
 
-**核心接口**:
+**核心接口**（真实实现）:
 ```python
 class BaostockClient:
-    def login() -> bool
-    def get_stock_data(stock_code: str, start_date: str, end_date: str) -> pd.DataFrame
-    def get_indicators_data(stock_code: str, indicator_list: list) -> pd.DataFrame
-    def logout() -> None
+    def login() -> bool                      # baostock 登录
+    def logout() -> None                     # 登出
+    def get_stock_name(stock_code: str) -> str   # 股票名称（query_stock_basic）
+    def get_daily_data(stock_code: str, start_date: str, end_date: str) -> pd.DataFrame   # 日线
+    def get_weekly_data(stock_code: str, start_date: str, end_date: str) -> pd.DataFrame  # 周线
+    def get_monthly_data(stock_code: str, start_date: str, end_date: str) -> pd.DataFrame # 月线
+    def get_index_data(index_code: str, start_date: str, end_date: str) -> pd.DataFrame   # 指数
+    def get_industry_data() -> pd.DataFrame  # 行业分类（code/code_name/industry）
+    def get_financial_data(stock_code: str, current_price: float) -> dict  # ROE/EPS/PE/PB/股息率
+    def normalize_stock_code(code: str) -> str   # sh600150 -> sh.600150（9位标准格式）
+    @staticmethod
+    def normalize_stock_code(stock_code: str) -> str
 
 class DataProcessor:
-    def clean_data(df: pd.DataFrame) -> pd.DataFrame
-    def calculate_basic_indicators(df: pd.DataFrame) -> pd.DataFrame
-    def normalize_data(df: pd.DataFrame) -> pd.DataFrame
+    def __init__(self, baostock_client: BaostockClient)
+    def get_all_stocks_data(stock_codes: list) -> dict   # {code: {daily/weekly/monthly}}
+    def get_market_index_data() -> dict                  # 大盘指数数据
+    def process_stock_data(stock_code: str) -> dict      # 单股 {daily, weekly, monthly}
 ```
+> 注: 周线/月线仅支持基础字段（date,code,open,high,low,close,volume,amount,turn,pctChg），
+> 不支持 tradestatus/isST 字段。mock 降级: baostock 不可用时自动使用 mock_baostock_client.py。
 
 #### 2.2.2 技术指标模块 (`indicators/`)
 **职责**: 计算各种技术指标
@@ -116,90 +132,95 @@ class MomentumIndicators:
 
 #### 2.2.3 核心分析模块 (`analysis/`)
 **职责**: 实现 Mystery 理论分析和形态识别
-- `mystery_logic.py`: Mystery 理论核心逻辑
-- `resonance_analyzer.py`: 三振共振分析
-- `pattern_recognition.py`: 形态识别
+- `mystery_logic.py`: Mystery 理论核心逻辑（基础过滤/三振共振/主升浪/平台突破/8项指标/技术细节/综合评分）
+- `adaptive_platform.py`: 自适应 VAP-ATR 平台中枢（POC 筹码控制点 + 自适应通道，gemmi 优化）
+- `pattern_recognition.py`: 形态识别（头肩/双重/三角形/楔形）
+- `resonance_analyzer.py`: 三振共振分析（兼容保留）
 - `__init__.py`: 模块初始化
 
-**核心接口**:
+**核心接口**（真实实现）:
 ```python
 class MysteryLogic:
-    def identify_main_wave(data: pd.DataFrame) -> dict
-    def identify_platform_breakout(data: pd.DataFrame) -> dict
-    def identify_air_refuel(data: pd.DataFrame) -> dict
+    def basic_filter(data: pd.DataFrame) -> Tuple[bool, List[str]]   # 基础过滤（年线/60日线/均线排列）
+    def three_resonance_analysis(data, market_data: dict, industry_trend: bool) -> dict  # 三振共振
+    def main_bull_wave_analysis(data: pd.DataFrame) -> dict          # 主升浪状态+判定依据
+    def platform_breakthrough_analysis(data: pd.DataFrame, stock_code: str) -> dict  # 平台突破（自适应+固定双判定）
+    def main_bull_wave_checklist(data: pd.DataFrame, industry_trend: bool) -> dict   # 主升浪8项指标
+    def technical_detail_capture(data: pd.DataFrame) -> dict         # 破五反五/筹码集中度
+    def comprehensive_analysis(data: pd.DataFrame, market_data=None) -> dict  # 综合评分+建议
 
-class ResonanceAnalyzer:
-    def analyze_market_resonance(stock_data: dict) -> dict
-    def analyze_industry_resonance(stock_data: dict) -> dict
-    def calculate_resonance_score(resonance_data: dict) -> float
+class AdaptivePlatform:  # analysis/adaptive_platform.py
+    def calculate_adaptive_vap_atr(data, n=60, atr_m=14, k=1.8, market_type) -> pd.DataFrame
+    def analyze_adaptive_platform(data, stock_code, n=60, atr_m=14, k=1.8) -> dict  # POC/上下轨/突破
+    def cns_adaptive_vap_atr(...)  # 兼容 docs/design.md 函数名
 
 class PatternRecognition:
-    def identify_head_shoulder(data: pd.DataFrame) -> dict
-    def identify_double_top(data: pd.DataFrame) -> dict
-    def identify_triangle(data: pd.DataFrame) -> dict
+    def recognize_head_and_shoulders(data) -> dict   # 头肩顶/底（60日窗, 可靠性70）
+    def recognize_double_top_bottom(data) -> dict    # 双重顶/底（40日窗, 可靠性75）
+    def recognize_triangle_pattern(data) -> dict     # 三角形（30日窗, 可靠性60）
+    def recognize_wedge_pattern(data) -> dict        # 楔形（25日窗, polyfit斜率）
+    def recognize_all_patterns(data) -> dict         # 综合取最高可靠性为"主要形态"
 ```
 
 #### 2.2.4 输出模块 (`output/`)
 **职责**: 生成各种格式的分析报告
-- `excel_generator.py`: Excel 报告生成
-- `html_generator.py`: HTML 报告生成
+- `excel_generator.py`: Excel 报告生成（汇总表/技术指标表/个股详情表/每日汇总）
+- `html_generator.py`: HTML 可视化报告 + 实时仪表板
 - `__init__.py`: 模块初始化
 
-**核心接口**:
+**核心接口**（真实实现）:
 ```python
 class ExcelGenerator:
-    def generate_report(analysis_results: dict, output_path: str) -> bool
-    def create_summary_sheet(df: pd.DataFrame) -> None
-    def create_indicators_sheet(df: pd.DataFrame) -> None
-    def create_analysis_sheet(analysis_data: dict) -> None
+    def generate_stock_analysis_report(analysis_results: dict, stock_data: dict) -> str
+    def generate_daily_summary(analysis_results: dict, stock_data: dict) -> str
+    # 文件名规则: utils.build_report_filename(analysis_results, 前缀, 后缀)
+    #   单只: {前缀}_{股票名称}_{时间戳}.xlsx（如 股票分析报告_中国船舶_xxx.xlsx）
+    #   多只: 每日{前缀}_...（如 每日股票分析报告_xxx.xlsx）
 
 class HTMLGenerator:
-    def generate_report(analysis_results: dict, output_path: str) -> bool
-    def create_summary_section(analysis_data: dict) -> str
-    def create_indicators_section(df: pd.DataFrame) -> str
-    def create_analysis_section(analysis_data: dict) -> str
+    def generate_analysis_report(analysis_results: dict, stock_data: dict) -> str
+    def generate_real_time_dashboard(analysis_results: dict) -> str
+    # 卡片展示: 三振共振/多周期/主升浪指标/主升浪状态判定/平台箱体/自适应VAP-ATR/财务指标
 ```
 
 #### 2.2.5 配置模块 (`config/`)
 **职责**: 系统配置管理
-- `config.yaml`: 主配置文件
+- `config.yaml`: 主配置文件（股票列表18只/输出目录/日志）
 - `__init__.py`: 配置加载
 
-**配置结构**:
+**配置结构**（真实）:
 ```yaml
-# 数据源配置
-data_source:
-  provider: "baostock"
-  timeout: 30
-  retry_count: 3
+# 基础配置
+output_dir: "/home/ai/ai_runner/stock/output"   # 输出目录（git仓库，自动同步远端）
+log_level: "INFO"
+log_file: "logs/stock_analysis.log"
 
-# 技术指标参数
-indicators:
-  ma_periods: [5, 10, 20, 60, 250]
-  macd_params: {fast: 12, slow: 26, signal: 9}
-  rsi_period: 14
-  kdj_period: 9
+# 股票配置（已去重，18只）
+stocks:
+  - "sh600000"  # 浦发银行
+  - "sh600036"  # 招商银行
+  ...
 
-# 分析参数
-analysis:
-  resonance_threshold: 0.7
-  breakout_volume_threshold: 1.5
-  main_wave_ma_period: 5
-
-# 输出配置
-output:
-  formats: ["excel", "html", "text"]
-  output_dir: "output"
-  template_dir: "templates"
+# 行业配置
+industries: ["银行", "白酒", "医药", "科技"]
 ```
 
 #### 2.2.6 工具模块 (`utils/`)
 **职责**: 提供通用工具函数
 - `exception_handler.py`: 异常处理系统
-- `__init__.py`: 工具函数
+- `__init__.py`: 工具函数（safe_division、build_report_filename 等）
 
-**核心接口**:
+**核心接口**（真实实现）:
 ```python
+def build_report_filename(analysis_results: dict, prefix: str, suffix: str) -> str:
+    """
+    报告文件名构建（统一命名规则）
+    - 单只股票（len==1）: {prefix}_{股票名称}_{时间戳}{suffix}
+      例: 股票分析报告_中国船舶_20260810_020929.xlsx
+    - 多只股票（每日分析）: 每日{prefix}_{时间戳}{suffix}
+      例: 每日股票分析报告_20260810_015948.xlsx
+    """
+
 class ExceptionHandler:
     def handle_exception(e: Exception, context: str) -> None
     def log_error(message: str, level: str = "ERROR") -> None
@@ -468,62 +489,78 @@ class ExceptionHandler:
 
 ## 4. 数据流设计
 
-### 4.1 数据获取流程
+### 4.1 数据获取流程（真实）
 ```
-用户输入股票代码 → 登录baostock → 获取历史数据 → 数据预处理 → 
-技术指标计算 → Mystery理论分析 → 形态识别 → 综合评分 → 
-生成报告 → 输出结果
+用户输入股票代码
+  → baostock login()
+  → 获取日线/周线/月线历史数据（normalize_stock_code 标准化为 sh.600150 9位格式）
+  → 获取大盘指数数据（上证指数/深证成指/沪深300/创业板指）
+  → 获取行业分类数据（code→所属板块映射，板块样本股近5/10/20日涨跌）
+  → 获取财务数据（query_profit_data: ROE/EPS；query_dividend_data: 股息率）
+  → 获取股票名称（query_stock_basic: 中国船舶）
+  → 数据预处理（去重/排序/缺失值处理）
+  → 技术指标计算（MA/MACD/RSI/量比/动能/量价）
+  → Mystery理论分析（基础过滤/三振共振/主升浪/平台突破[自适应+固定]/8项指标/技术细节）
+  → 形态识别（头肩/双重/三角形/楔形）→ 多周期分析（周线/月线）
+  → 综合评分 → 生成报告（Excel/HTML/汇总/仪表板）
+  → git add/commit/push 同步远端
+  → logout()
 ```
 
 ### 4.2 数据处理流程
 ```
-原始数据 → 数据清洗 → 缺失值处理 → 异常值处理 → 
-标准化处理 → 技术指标计算 → 特征提取 → 分析结果
+原始数据 → 数据清洗（去重/排序）→ 缺失值处理 → 
+技术指标计算（rolling窗口）→ 特征提取 → 分析结果
 ```
 
-### 4.3 输出流程
+### 4.3 输出流程（真实）
 ```
-分析结果 → 模板渲染 → 格式转换 → 文件生成 → 
-质量检查 → 最终输出
+分析结果 → 文件名规则构建（单只含名称/每日加前缀）
+  → Excel生成（汇总表/技术指标表/个股详情表）
+  → HTML生成（卡片式报告/实时仪表板）
+  → 文本汇总报告
+  → git同步（_sync_output_to_git: add → commit → push 443端口）
 ```
 
 ## 5. 接口设计
 
 ### 5.1 用户接口
 
-#### 5.1.1 命令行接口
+#### 5.1.1 命令行接口（真实）
 ```bash
-# 单只股票分析
-python3 run_analysis.py --mode single --stock sh600000
+# 单只股票分析（文件名含股票名称，如 股票分析报告_中国船舶_xxx）
+/home/ai/ai_runner/venv/bin/python run_analysis.py --mode single --stock sh600150
 
-# 多只股票分析
-python3 run_analysis.py --mode batch --stocks sh600000,sz000001
+# 每日分析（config 中 18 只股票，文件名加"每日"前缀）
+/home/ai/ai_runner/venv/bin/python run_analysis.py --mode daily
 
-# 每日分析
-python3 run_analysis.py --mode daily
+# 指定配置文件
+/home/ai/ai_runner/venv/bin/python run_analysis.py --mode daily --config config/config.yaml
 
 # 系统测试
-python3 run_analysis.py --test
+/home/ai/ai_runner/venv/bin/python run_analysis.py --test
 
-# 配置管理
-python3 run_analysis.py --config config/custom.yaml
+# 快捷脚本（激活 venv 后运行每日分析）
+bash daily.sh
 ```
 
-#### 5.1.2 编程接口
+> 注意：必须使用 `/home/ai/ai_runner/venv/bin/python`（系统 python3 缺少 baostock/pandas 依赖）。
+
+#### 5.1.2 编程接口（真实）
 ```python
 from main import StockAnalysisSystem
 
 # 创建分析系统
-system = StockAnalysisSystem()
+system = StockAnalysisSystem('config/config.yaml')
 
-# 分析单只股票
-result = system.analyze_stock('sh600000')
+# 分析多只股票（返回 analysis_results/stock_data/summary/recommendations）
+results = system.analyze_stocks(['sh600150', 'sz000001'])
 
-# 分析多只股票
-results = system.analyze_stocks(['sh600000', 'sz000001'])
+# 单只股票分析（生成报告+git同步）
+system.analyze_single_stock('sh600150')
 
-# 生成报告
-system.generate_report(result, 'output/report.xlsx')
+# 每日分析（config 股票列表，自动 git 同步远端）
+system.run_daily_analysis()
 ```
 
 ### 5.2 内部接口
@@ -615,24 +652,31 @@ class ExceptionHandler:
 
 ## 9. 部署设计
 
-### 9.1 系统要求
-- **Python版本**: 3.8+
-- **依赖库**: pandas, numpy, baostock, openpyxl, pyyaml
-- **内存**: 最小 512MB，推荐 2GB+
-- **存储**: 最小 1GB，推荐 10GB+
+### 9.1 系统要求（真实环境）
+- **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
+- **依赖库**: baostock 0.9.3, pandas 3.0.5, numpy 2.5.1, openpyxl 3.1.5, PyYAML 6.0.3
+- **网络**: baostock 数据服务（行情）+ github.com:443（SSH，22端口被屏蔽）
+- **存储**: 输出目录 /home/ai/ai_runner/stock/output（git 仓库，远端 misteryresult）
 
-### 9.2 部署步骤
-1. **环境准备**: 安装 Python 和依赖库
-2. **配置部署**: 配置系统参数
-3. **数据准备**: 准备必要的数据文件
-4. **测试验证**: 运行系统测试
-5. **正式运行**: 启动系统服务
+### 9.2 部署步骤（真实）
+1. **环境准备**: 使用现有 venv（`/home/ai/ai_runner/venv`），依赖已装齐
+2. **配置部署**: `config/config.yaml`（股票列表18只、output_dir）
+3. **输出仓库**: `/home/ai/ai_runner/stock/output` 为独立 git 仓库，
+   远端 `ssh://git@ssh.github.com:443/zengjuly/misteryresult.git`（SSH over 443）
+4. **测试验证**: `/home/ai/ai_runner/venv/bin/python run_analysis.py --test`
+5. **正式运行**: 单股 `--mode single --stock sh600150`；每日 `--mode daily`
 
-### 9.3 运行维护
-- **日志监控**: 监控系统运行日志
-- **性能监控**: 监控系统性能指标
-- **数据更新**: 定期更新股票数据
-- **版本升级**: 定期升级系统版本
+### 9.3 运行维护（真实）
+- **自动同步**: 每次生成报告后自动 git add/commit/push（`_sync_output_to_git`），
+  输出目录与远端保持同步
+- **SSH 通道**: github.com:22 被网络屏蔽，remote 使用 443 端口
+  （`ssh://git@ssh.github.com:443/...`）；如需全局生效可在 `~/.ssh/config` 配置
+- **定时任务**: Hermes cron 任务"股票每日分析"（job_id: 1d056599e065），
+  周一至五 15:30 自动运行 `run_analysis.py --mode daily`，
+  可用 `cronjob action='run'` 手动触发，`cronjob action='list'` 查看状态
+- **日志监控**: logs/stock_analysis.log（INFO 级别）
+- **数据更新**: 每日定时任务自动获取最新行情
+- **版本升级**: git 管理源码（stock_analyzer）+ 结果（output）双仓库
 
 ## 10. 测试设计
 
@@ -669,10 +713,11 @@ class ExceptionHandler:
 
 ## 12. 版本管理
 
-### 12.1 版本控制
-- **Git管理**: 使用 Git 进行版本控制
-- **分支策略**: 采用 Git Flow 分支策略
-- **版本号**: 遵循语义化版本号
+### 12.1 版本控制（真实）
+- **源码仓库**: `/home/ai/ai_runner/stock/stock_analyzer`（git，分支 main）
+- **结果仓库**: `/home/ai/ai_runner/stock/output`（git，远端 `ssh://git@ssh.github.com:443/zengjuly/misteryresult.git`）
+- **提交规范**: 源码用 feat:/fix:/docs:/chore: 前缀；结果仓库自动提交"📊 股票分析报告更新 {时间戳}"
+- **版本号**: 设计文档版本 1.1.0（随系统迭代更新）
 
 ### 12.2 发布流程
 - **代码审查**: 代码审查和测试
@@ -682,8 +727,17 @@ class ExceptionHandler:
 
 ## 13. 总结
 
-本系统设计文档详细描述了 Mystery 趋势交易分析系统的架构设计、核心算法、接口设计、错误处理、性能优化、扩展性设计、部署设计、测试设计和文档设计等内容。
+本系统设计文档详细描述了 Mystery 趋势交易分析系统的架构设计、核心算法（含非标准指标精确计算方法）、接口设计、错误处理、性能优化、扩展性设计、部署设计、测试设计和文档设计等内容。
 
 通过模块化设计、接口标准化、错误处理完善、性能优化、扩展性考虑等设计策略，确保了系统的可靠性、可维护性、可扩展性和高性能。
+
+**系统当前能力**：
+- 三振共振（个股+行业+大盘真实数据）判断
+- 自适应 VAP-ATR 平台中枢（POC 筹码控制点 + 波动率自适应通道，A股涨跌停修正）
+- 主升浪状态判定（带判定依据）+ 主升浪8项指标对比表
+- 多周期（日/周/月线）共振分析
+- 基本面数据（ROE/EPS/PE/PB/股息率）+ 板块评级
+- 报告自动生成（Excel/HTML/文本/仪表板）+ git 自动同步远端
+- 每日定时任务（周一至五 15:30）自动分析
 
 后续开发人员可以基于此文档进行系统开发、维护和扩展，确保项目的顺利进行和持续发展。
