@@ -553,8 +553,8 @@ class HTMLGenerator:
                     </ul>
                     <h4>多周期箱体</h4>
                     <ul>
-                        {f'<li>周线箱体: 下沿 {result.get("周线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("周线箱体", {}).get("上沿", "-")} | 当前 {result.get("周线箱体", {}).get("当前价", "-")} | 状态: {result.get("周线箱体", {}).get("状态", "-")}</li>' if result.get('周线箱体') and result.get('周线箱体', {}).get('上沿') is not None else ''}
-                        {f'<li>月线箱体: 下沿 {result.get("月线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("月线箱体", {}).get("上沿", "-")} | 当前 {result.get("月线箱体", {}).get("当前价", "-")} | 状态: {result.get("月线箱体", {}).get("状态", "-")}</li>' if result.get('月线箱体') and result.get('月线箱体', {}).get('上沿') is not None else ''}
+                        {f'<li>周线箱体: 下沿 {result.get("周线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("周线箱体", {}).get("上沿", "-")} | 当前 {result.get("周线箱体", {}).get("当前价", "-")} | 状态: {result.get("周线箱体", {}).get("状态", "-")} | 自适应N: {result.get("周线箱体", {}).get("自适应周期", {}).get("adaptive_n", "-")}日</li>' if result.get('周线箱体') and result.get('周线箱体', {}).get('上沿') is not None else ''}
+                        {f'<li>月线箱体: 下沿 {result.get("月线箱体", {}).get("下沿", "-")} ~ 上沿 {result.get("月线箱体", {}).get("上沿", "-")} | 当前 {result.get("月线箱体", {}).get("当前价", "-")} | 状态: {result.get("月线箱体", {}).get("状态", "-")} | 自适应N: {result.get("月线箱体", {}).get("自适应周期", {}).get("adaptive_n", "-")}日</li>' if result.get('月线箱体') and result.get('月线箱体', {}).get('上沿') is not None else ''}
                     </ul>
                     <h4>分析详情</h4>
                     <ul>

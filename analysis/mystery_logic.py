@@ -282,13 +282,16 @@ class MysteryLogic:
             return {'主升浪状态': '异常', '详情': [f"分析异常: {e}"]}
     
     def _analyze_cycle_box(self, cycle_data: pd.DataFrame, cycle_name: str,
-                           lookback: int = 20) -> Dict[str, Any]:
+                           lookback: int = 20, adaptive_n: int = None,
+                           avg_turnover: float = None) -> Dict[str, Any]:
         """
         周线/月线箱体分析（多周期箱体：上沿/下沿 + 状态识别）
         :param cycle_data: 周线或月线K线数据（含 最高价/最低价/收盘价）
         :param cycle_name: 周期名称（'周线'/'月线'）
         :param lookback: 箱体统计周期（周线默认20周≈5个月，月线默认20月）
-        :return: {周期, 上沿, 下沿, 当前价, 位置, 状态, 距上沿%, 距下沿%, 详情}
+        :param adaptive_n: 日线自适应检测周期（换手率驱动，gemmi_an.md）
+        :param avg_turnover: 近20日日均换手率(%)
+        :return: {周期, 上沿, 下沿, 当前价, 位置, 状态, 距上沿%, 距下沿%, 自适应周期, 详情}
         """
         result = {
             '周期': cycle_name,
@@ -299,6 +302,7 @@ class MysteryLogic:
             '状态': '未知',
             '距上沿': None,
             '距下沿': None,
+            '自适应周期': None,   # 换手率驱动的日线自适应检测周期
             '详情': [],
         }
         try:
@@ -377,6 +381,17 @@ class MysteryLogic:
 
             result['详情'].append(
                 f"{cycle_name}箱体(近{lookback}期): 下沿{box_low:.2f} ~ 上沿{box_high:.2f}")
+            
+            # 输出自适应检测周期（换手率驱动，gemmi_an.md）
+            if adaptive_n is not None:
+                result['自适应周期'] = {
+                    'adaptive_n': adaptive_n,
+                    'avg_turnover': avg_turnover,
+                }
+                result['详情'].append(
+                    f"{cycle_name}自适应周期: N={adaptive_n}日"
+                    f"（近20日均换手{avg_turnover}%）" if avg_turnover is not None
+                    else f"{cycle_name}自适应周期: N={adaptive_n}日")
 
         except Exception as e:
             result['详情'].append(f"{cycle_name}箱体分析异常: {e}")
@@ -435,10 +450,21 @@ class MysteryLogic:
                 result['详情'].append(f"自适应平台分析异常(降级固定箱体): {e}")
             
             # ============ 多周期箱体分析（周线/月线上下沿） ============
+            # 取自适应平台计算出的检测周期（换手率驱动）
+            adaptive_n = None
+            avg_turnover = None
+            if result.get('自适应平台') and result['自适应平台'].get('自适应周期'):
+                ap_cycle = result['自适应平台']['自适应周期']
+                adaptive_n = ap_cycle.get('adaptive_n')
+                avg_turnover = ap_cycle.get('avg_turnover')
             if weekly_data is not None:
-                result['周线箱体'] = self._analyze_cycle_box(weekly_data, '周线', lookback=20)
+                result['周线箱体'] = self._analyze_cycle_box(
+                    weekly_data, '周线', lookback=20, adaptive_n=adaptive_n,
+                    avg_turnover=avg_turnover)
             if monthly_data is not None:
-                result['月线箱体'] = self._analyze_cycle_box(monthly_data, '月线', lookback=20)
+                result['月线箱体'] = self._analyze_cycle_box(
+                    monthly_data, '月线', lookback=20, adaptive_n=adaptive_n,
+                    avg_turnover=avg_turnover)
             
             # 多周期箱体状态汇总（供报告展示）
             cycle_states = []

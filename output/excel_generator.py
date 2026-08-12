@@ -122,7 +122,12 @@ class ExcelGenerator:
         try:
             for stock_code, result in analysis_results.items():
                 if isinstance(result, dict) and '综合评分' in result:
-                    sheet_name = f"个股_{stock_code}"
+                    # sheet名: 个股名_股票代码（如 中国船舶_sh600150）
+                    stock_name = result.get('股票名称', '未知')
+                    sheet_name = f"个股{stock_name}_{stock_code}"
+                    # Excel sheet名最长31字符，超长截断
+                    if len(sheet_name) > 31:
+                        sheet_name = sheet_name[:31]
                     
                     # 创建详细分析数据
                     detail_data = []
@@ -262,6 +267,11 @@ class ExcelGenerator:
                             detail_data.append([f'{box_name}状态', box.get('状态'), ''])
                             detail_data.append([f'{box_name}距上沿', f"{box.get('距上沿')}%", ''])
                             detail_data.append([f'{box_name}距下沿', f"{box.get('距下沿')}%", ''])
+                            box_cycle = box.get('自适应周期')
+                            if box_cycle:
+                                detail_data.append([f'{box_name}自适应周期N', 
+                                                   f"{box_cycle.get('adaptive_n')}日"
+                                                   f"（日均换手{box_cycle.get('avg_turnover')}%）", ''])
                     if result.get('多周期箱体状态'):
                         detail_data.append(['多周期箱体状态', result.get('多周期箱体状态'), ''])
                     detail_data.append(['', '', ''])

@@ -854,6 +854,10 @@ class StockAnalysisSystem:
                     if box and box.get('上沿') is not None:
                         print(f"   📐 {box_name}箱体: 下沿 {box.get('下沿')} ~ 上沿 {box.get('上沿')} | "
                               f"当前 {box.get('当前价')} | 状态: {box.get('状态')}")
+                        box_cycle = box.get('自适应周期')
+                        if box_cycle:
+                            print(f"      ⏱️ {box_name}自适应周期: N={box_cycle.get('adaptive_n')}日"
+                                  f"（日均换手{box_cycle.get('avg_turnover')}%）")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")
