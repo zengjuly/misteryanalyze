@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+# db_manager.py - SQLite本地缓存数据库管理（基于docs/gemmi_an.md数据中枢方案）
+"""
+Mystery 趋势交易系统 - 数据库缓存层
+====================================
+理论来源: docs/gemmi_an.md（数据中枢与全量自动化分析方案）
+
+核心设计:
+  - SQLite 本地缓存 (mystery_cache.db)，解决频繁调用 baostock API 慢的问题
+  - 联合主键 (code, date, period) + 覆盖索引，百万级数据毫秒级加载
+  - safe_upsert 线程安全增量写入（Cache-Aside 旁路缓存模式的落库端）
+
+三张核心表:
+  1. stock_industry_info  : 证券代码/名称/类型/行业分类（主键 code）
+  2. stock_kline_data     : 核心行情表（code,date,period联合主键，日/周/月线）
+  3. stock_financial_data : 基本面快照（code,report_date 联合主键）
+"""
+
+import os
+import sqlite3
+import logging
+import threading
+from typing import Dict, List, Optional, Any
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# 数据库默认路径
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mystery_cache.db')
+
+
+class MysteryDB:
+    """SQLite 数据库管理器（线程安全）"""
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+        self.db_path = db_path
+        # 确保目录存在
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        self._lock = threading.RLock()  # 线程安全写锁
+        self._init_db()
+
+    # ============ 建表与初始化 ============
+    def _init_db(self):
+        """初始化数据库表结构"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executescript("""
+                -- 1. 证券信息表（代码/名称/类型/行业）
+                CREATE TABLE IF NOT EXISTS stock_industry_info (
+                    code        TEXT PRIMARY KEY,        -- 证券代码 sh.600150
+                    code_name   TEXT,                    -- 证券名称 中国船舶
+                    ipo_date    TEXT,                    -- 上市日期
+                    out_date    TEXT,                    -- 退市日期
+                    type        TEXT,                    -- 类型 1股票 2指数 3其他
+                    status      TEXT,                    -- 状态 1上市 0退市
+                    industry    TEXT                     -- 行业分类（行业表补充）
+                );
+
+                -- 2. 核心行情表（联合主键，日/周/月线合并存储）
+                CREATE TABLE IF NOT EXISTS stock_kline_data (
+                    code      TEXT NOT NULL,             -- 证券代码 sh.600150
+                    date      TEXT NOT NULL,             -- 交易日期 2026-08-12
+                    period    TEXT NOT NULL,             -- 周期 daily/weekly/monthly
+                    open      REAL,                      -- 开盘价
+                    high      REAL,                      -- 最高价
+                    low       REAL,                      -- 最低价
+                    close     REAL,                      -- 收盘价
+                    preclose  REAL,                      -- 前收盘
+                    volume    REAL,                      -- 成交量（股）
+                    amount    REAL,                      -- 成交额（元）
+                    adjustflag REAL,                     -- 复权状态 1后复权 2前复权 3不复权
+                    turn      REAL,                      -- 换手率(%)
+                    tradestatus REAL,                    -- 交易状态 1正常 0停牌
+                    pctChg    REAL,                      -- 涨跌幅(%)
+                    isST      REAL,                      -- 是否ST 1是 0否
+                    PRIMARY KEY (code, date, period)
+                );
+
+                -- 核心行情快速查询覆盖索引（code+period 定位，date 排序）
+                CREATE INDEX IF NOT EXISTS idx_kline_fast_query
+                    ON stock_kline_data (code, period, date);
+
+                -- 3. 基本面快照表
+                CREATE TABLE IF NOT EXISTS stock_financial_data (
+                    code         TEXT NOT NULL,          -- 证券代码
+                    report_date  TEXT NOT NULL,          -- 报告期 2026-03-31
+                    roe          REAL,                   -- 净资产收益率(%)
+                    roe_avg      REAL,                   -- 加权ROE(%)
+                    np_margin    REAL,                   -- 净利率(%)
+                    gp_margin    REAL,                   -- 毛利率(%)
+                    net_profit   REAL,                   -- 净利润
+                    eps_ttm      REAL,                   -- 每股收益TTM
+                    PB           REAL,                   -- 市净率（估值补充）
+                    PE           REAL,                   -- 市盈率
+                    divid_cash   REAL,                   -- 每股税前现金分红
+                    PRIMARY KEY (code, report_date)
+                );
+
+                -- 基本面查询索引
+                CREATE INDEX IF NOT EXISTS idx_financial_query
+                    ON stock_financial_data (code, report_date DESC);
+                """)
+                conn.commit()
+                logger.debug(f"✅ 数据库初始化完成: {self.db_path}")
+            finally:
+                conn.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        """建立连接（check_same_thread=False 支持多线程读取）"""
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")   # WAL模式提升并发读写
+        return conn
+
+    # ============ 证券信息 ============
+    def upsert_stock_info(self, df: pd.DataFrame) -> int:
+        """批量写入/更新证券信息（code主键）"""
+        if df is None or df.empty:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = []
+                for _, r in df.iterrows():
+                    rows.append((
+                        str(r.get('code', '')),
+                        str(r.get('code_name', '') or ''),
+                        str(r.get('ipoDate', '') or ''),
+                        str(r.get('outDate', '') or ''),
+                        str(r.get('type', '') or ''),
+                        str(r.get('status', '') or ''),
+                    ))
+                conn.executemany("""
+                    INSERT OR REPLACE INTO stock_industry_info
+                    (code, code_name, ipo_date, out_date, type, status)
+                    VALUES (?,?,?,?,?,?)
+                """, rows)
+                conn.commit()
+                return len(rows)
+            finally:
+                conn.close()
+
+    def update_industry(self, code: str, industry: str):
+        """更新单只股票的行业分类"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE stock_industry_info SET industry=? WHERE code=?",
+                    (industry, code))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_stock_info(self, limit: int = None, stock_only: bool = True,
+                       listed_only: bool = True) -> pd.DataFrame:
+        """
+        读取证券信息
+        :param limit: 限制条数
+        :param stock_only: 仅股票（type=1）
+        :param listed_only: 仅上市（status=1）
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                sql = "SELECT * FROM stock_industry_info WHERE 1=1"
+                if stock_only:
+                    sql += " AND type='1'"
+                if listed_only:
+                    sql += " AND status='1'"
+                sql += " ORDER BY code"
+                if limit:
+                    sql += f" LIMIT {int(limit)}"
+                df = pd.read_sql_query(sql, conn)
+                return df
+            finally:
+                conn.close()
+
+    # ============ 行情数据 ============
+    def upsert_kline(self, df: pd.DataFrame, code: str, period: str) -> int:
+        """
+        线程安全增量写入行情（(code,date,period)联合主键，INSERT OR REPLACE）
+        :param df: 含 date/open/high/low/close/volume/amount/turn 等列的DataFrame
+        :param code: 证券代码（9位 sh.600150）
+        :param period: 周期 daily/weekly/monthly
+        """
+        if df is None or df.empty:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = []
+                for _, r in df.iterrows():
+                    rows.append((
+                        code, str(r.get('date', '')), period,
+                        self._f(r.get('open')), self._f(r.get('high')),
+                        self._f(r.get('low')), self._f(r.get('close')),
+                        self._f(r.get('preclose')), self._f(r.get('volume')),
+                        self._f(r.get('amount')), self._f(r.get('adjustflag')),
+                        self._f(r.get('turn')), self._f(r.get('tradestatus')),
+                        self._f(r.get('pctChg')), self._f(r.get('isST')),
+                    ))
+                conn.executemany("""
+                    INSERT OR REPLACE INTO stock_kline_data
+                    (code, date, period, open, high, low, close, preclose,
+                     volume, amount, adjustflag, turn, tradestatus, pctChg, isST)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, rows)
+                conn.commit()
+                return len(rows)
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _f(v) -> Optional[float]:
+        """转换为float或None"""
+        if v is None or pd.isna(v):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def load_kline(self, code: str, period: str = 'daily',
+                   start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """
+        从本地缓存读取行情（毫秒级，覆盖索引 idx_kline_fast_query）
+        :param code: 证券代码
+        :param period: 周期 daily/weekly/monthly
+        :param start_date: 起始日期 YYYY-MM-DD
+        :param end_date: 截止日期
+        :return: 按日期升序的DataFrame（列名与baostock一致）
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                sql = ("SELECT date, code, open, high, low, close, preclose, "
+                       "volume, amount, adjustflag, turn, tradestatus, pctChg, isST "
+                       "FROM stock_kline_data WHERE code=? AND period=?")
+                params: List[Any] = [code, period]
+                if start_date:
+                    sql += " AND date>=?"
+                    params.append(start_date)
+                if end_date:
+                    sql += " AND date<=?"
+                    params.append(end_date)
+                sql += " ORDER BY date ASC"
+                df = pd.read_sql_query(sql, conn, params=params)
+                return df
+            finally:
+                conn.close()
+
+    def get_cached_tickers(self, period: str = 'daily') -> List[str]:
+        """获取缓存中有行情数据的股票代码列表"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "SELECT DISTINCT code FROM stock_kline_data WHERE period=?",
+                    (period,))
+                return [r[0] for r in cur.fetchall()]
+            finally:
+                conn.close()
+
+    def get_kline_count(self) -> int:
+        """获取行情总行数"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("SELECT COUNT(*) FROM stock_kline_data")
+                return cur.fetchone()[0]
+            finally:
+                conn.close()
+
+    # ============ 财务数据 ============
+    def upsert_financial(self, code: str, report_date: str,
+                         roe: float = None, roe_avg: float = None,
+                         np_margin: float = None, gp_margin: float = None,
+                         net_profit: float = None, eps_ttm: float = None,
+                         pb: float = None, pe: float = None,
+                         divid_cash: float = None) -> int:
+        """写入单条基本面快照（code,report_date联合主键）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO stock_financial_data
+                    (code, report_date, roe, roe_avg, np_margin, gp_margin,
+                     net_profit, eps_ttm, PB, PE, divid_cash)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """, (code, report_date, roe, roe_avg, np_margin, gp_margin,
+                      net_profit, eps_ttm, pb, pe, divid_cash))
+                conn.commit()
+                return 1
+            finally:
+                conn.close()
+
+    def load_financial(self, code: str, limit: int = 4) -> pd.DataFrame:
+        """读取基本面快照（按报告期倒序）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                sql = ("SELECT * FROM stock_financial_data WHERE code=? "
+                       "ORDER BY report_date DESC LIMIT ?")
+                return pd.read_sql_query(sql, conn, params=[code, limit])
+            finally:
+                conn.close()
+
+    # ============ 统计 ============
+    def stats(self) -> Dict[str, Any]:
+        """数据库统计信息"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("SELECT COUNT(*) FROM stock_industry_info")
+                info_count = cur.fetchone()[0]
+                cur = conn.execute("SELECT COUNT(*) FROM stock_kline_data")
+                kline_count = cur.fetchone()[0]
+                cur = conn.execute("SELECT COUNT(*) FROM stock_financial_data")
+                fin_count = cur.fetchone()[0]
+                return {
+                    'db_path': self.db_path,
+                    '证券信息数': info_count,
+                    '行情行数': kline_count,
+                    '财务快照数': fin_count,
+                }
+            finally:
+                conn.close()
+
+    def close(self):
+        """关闭（WAL checkpoint）"""
+        try:
+            conn = self._connect()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+        except Exception:
+            pass

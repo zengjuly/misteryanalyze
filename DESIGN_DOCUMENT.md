@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.3.0
+- **版本**: 1.4.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-12
 - **文档类型**: 系统设计文档
@@ -78,6 +78,10 @@
 **职责**: 负责股票数据的获取和预处理
 - `baostock_client.py`: baostock 数据获取客户端
 - `data_processor.py`: 数据预处理和清洗
+- `db_manager.py`: SQLite 本地缓存数据库（三表/联合主键/索引/safe_upsert）★
+- `data_engine.py`: Cache-Aside 数据抽象层（MysteryDataEngine，缓存穿透回填）★
+- `sync_all_market.py`: 全市场多线程同步脚本（get_all_a_shares）★
+- `run_market_scan.py`: 全量自适应扫描分析引擎（VAP-ATR信号捕获）★
 - `__init__.py`: 模块初始化
 
 **核心接口**（真实实现）:
@@ -594,6 +598,56 @@ class ExceptionHandler:
   → git同步（_sync_output_to_git: add → commit → push 443端口）
 ```
 
+### 4.4 数据中枢与全量自动化分析（gemmi_an.md）— ★★
+
+**整体架构**（四大支柱）：
+```
+[交易所/BaoStock API] ──→ [sync_all_market.py 批量同步脚本]
+                                │ (增量安全写入 safe_upsert)
+                                ▼
+                        [SQLite本地缓存 mystery_cache.db]
+                                │ (Sub-ms高速读取)
+                                ▼
+[run_market_scan.py 全量扫描] ←── [data_engine.py Cache-Aside抽象层]
+        │
+        ├──→ 生成报告（output/）
+        └──→ 核心信号: 自适应VAP-ATR突破 / 筹码低位共振
+```
+
+**① 数据库设计（data/db_manager.py, mystery_cache.db）**：
+- `stock_industry_info`：证券代码/名称/类型/行业分类（主键 `code`，type=1股票 2指数）
+- `stock_kline_data`：核心行情表，联合主键 `(code, date, period)` 合并存储日/周/月线，
+  含高开低收/成交量额/换手率/复权因子，支持前/后复权
+- `stock_financial_data`：基本面快照，联合主键 `(code, report_date)`
+- 覆盖索引 `idx_kline_fast_query (code, period, date)` → 百万级数据毫秒级 Pandas 加载
+- WAL 模式 + `check_same_thread=False` + RLock → 多线程安全读写
+- `upsert_kline` 使用 `INSERT OR REPLACE` 实现线程安全增量覆盖（safe_upsert）
+
+**② 数据抽象层（data/data_engine.py, MysteryDataEngine）**：
+- **Cache-Aside 旁路缓存模式**：读取先查本地缓存 → 未命中请求 baostock → 清洗后回填
+- `get_kline(code, period)`：毫秒级缓存读取，未命中自动穿透 baostock 并增量回填
+- `sync_stock_list()`：全市场证券列表同步（query_stock_basic 全量，默认过滤指数）
+- `_clean_kline`：中文列名→英文标准化 + 去重列 + 排序（防重复列导致 Series 歧义）
+- `get_financial()`：财务数据 Cache-Aside
+
+**③ 全量同步脚本（data/sync_all_market.py）**：
+- `get_all_a_shares()`：动态获取市场所有 A 股（5208 只上市股票）
+- 多线程 `ThreadPoolExecutor` 并行同步（默认 8 线程），`sync_worker` 单股增量拉取
+- 参数：`--period`（daily/weekly/monthly）、`--days` 回溯、`--limit` 测试限制、`--threads`
+- 用法：`python data/sync_all_market.py --period daily --days 1100`
+
+**④ 全量扫描分析（data/run_market_scan.py）**：
+- `load_local_cached_tickers()`：从缓存加载股票列表（未缓存自动同步）
+- `scan_single_stock()`：自适应换手周期 → 技术指标 → 自适应 VAP-ATR 平台 → 主升浪8项 → 信号捕获
+- **核心信号**：① VAP-ATR 突破（Close>上轨且阳线且重心>0.5）② 筹码低位共振（近20日均换手<2%）
+- 输出：市场扫描报告 .txt（信号股票Top）+ 市场扫描明细 .csv
+- 用法：`python data/run_market_scan.py --limit 500 --sync`
+
+**⑤ 实战化运行闭环**：
+1. 数据初始化：`python data/sync_all_market.py`（全量更新本地缓存）
+2. 每日分析：闭市后 `python data/run_market_scan.py`（增量计算+信号捕获）
+3. 成果查看：output 目录报告，支持自动化决策
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
@@ -813,5 +867,6 @@ class ExceptionHandler:
 - 基本面数据（ROE/EPS/PE/PB/股息率）+ 板块评级
 - 报告自动生成（Excel/HTML/文本/仪表板）+ git 自动同步远端
 - 每日定时任务（周一至五 15:30）自动分析
+- **数据中枢**（SQLite缓存 + Cache-Aside数据引擎 + 全量多线程同步 + 全市场扫描信号捕获）
 
 后续开发人员可以基于此文档进行系统开发、维护和扩展，确保项目的顺利进行和持续发展。
