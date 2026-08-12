@@ -13,6 +13,8 @@
 - **形态识别**: 头肩顶/底、双重顶/底、三角形、楔形
 - **智能分析**: 综合评分、投资建议、风险评估
 - **报告输出**: Excel详细报告、HTML可视化报告
+- **数据中枢**: SQLite本地缓存 + Cache-Aside数据引擎（毫秒级读取）
+- **全市场扫描**: 全量A股多线程同步 + 自适应VAP-ATR信号捕获
 
 ### 📊 技术指标
 - **均线系统**: MA5、MA10、MA20、MA60、MA250
@@ -34,7 +36,11 @@ stock_analyzer/
 │   └── config.yaml        # 主配置文件
 ├── data/                  # 数据获取模块
 │   ├── baostock_client.py # baostock数据客户端
-│   └── data_processor.py  # 数据预处理
+│   ├── data_processor.py  # 数据预处理
+│   ├── db_manager.py      # SQLite本地缓存数据库（三表/联合主键/索引）
+│   ├── data_engine.py     # Cache-Aside数据抽象层（缓存穿透回填）
+│   ├── sync_all_market.py # 全市场多线程同步脚本
+│   └── run_market_scan.py # 全量自适应扫描分析引擎
 ├── indicators/            # 技术指标模块
 │   ├── ma_indicators.py   # 均线指标
 │   ├── trend_indicators.py # 趋势指标
@@ -127,6 +133,83 @@ python3 run_analysis.py --test
 - `--mode single`: 单只股票分析模式
 - `--stock`: 指定股票代码
 - `--test`: 运行系统测试
+
+### 数据中枢与全市场扫描
+
+系统内置 SQLite 本地缓存（`data/mystery_cache.db`）+ Cache-Aside 数据引擎，
+支持全量 A 股数据的本地化存储与毫秒级读取，解决频繁调用 baostock API 慢的问题。
+
+#### 1. 全量数据同步
+
+```bash
+# 全量同步（默认日线，回溯1100天）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py
+
+# 指定周期（日/周/月线）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period weekly --days 1830
+
+# 测试模式：仅同步前500只（快速验证）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --limit 500 --threads 4
+
+# 每日增量更新（闭市后）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 365
+```
+
+参数说明：
+| 参数 | 说明 | 默认 |
+|---|---|---|
+| `--period` | 同步周期：daily/weekly/monthly | daily |
+| `--days` | 回溯天数（日线1100≈3年，周线1830≈5年，月线3650≈10年） | 按周期 |
+| `--threads` | 多线程数（5000+股票建议8-16） | 8 |
+| `--limit` | 仅同步前N只（测试用） | 全部 |
+| `--index` | 是否包含指数 | 否（仅股票） |
+
+#### 2. 全市场扫描分析
+
+```bash
+# 扫描本地缓存中的所有股票（毫秒级读取）
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py
+
+# 首次使用：先同步再扫描
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py --sync
+
+# 快速测试：仅扫描前100只
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py --limit 100
+
+# 周线周期扫描 + 报告Top 50
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py --period weekly --top 50
+```
+
+参数说明：
+| 参数 | 说明 | 默认 |
+|---|---|---|
+| `--limit` | 扫描股票数量限制 | 全部 |
+| `--period` | K线周期：daily/weekly/monthly | daily |
+| `--sync` | 先同步数据再扫描 | 否 |
+| `--top` | 报告Top N | 20 |
+
+扫描输出（output 目录）：
+- `市场扫描报告_时间戳.txt`：信号股票 Top（VAP-ATR 突破 / 筹码低位共振）+ 主升浪满足数
+- `市场扫描明细_时间戳.csv`：全量明细（自适应N / POC / 自适应上下轨 / 信号等）
+
+#### 3. 核心信号
+
+扫描引擎捕获两类信号：
+- **VAP-ATR 突破**: 收盘价 > 自适应上轨 且 阳线 且 重心>0.5（实体突破）
+- **筹码低位共振**: 近20日平均换手率 < 2%（筹码高度集中 + 低位）
+
+#### 4. 实战化运行闭环
+
+```bash
+# ① 数据初始化（首次）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 1100
+
+# ② 每日闭市后：增量同步 + 全市场扫描
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 365
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py
+
+# ③ 成果查看：output/ 目录报告
+```
 
 ### 输出文件说明
 
@@ -263,10 +346,10 @@ python3 run_analysis.py --test
 
 ## 版本信息
 
-- **版本**: 1.0.0
+- **版本**: 1.4.0
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-09
-- **Python版本**: 3.6+
+- **更新时间**: 2026-08-12
+- **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 许可证
 
