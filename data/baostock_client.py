@@ -79,6 +79,27 @@ class BaostockClient:
         if self.login_success:
             bs.logout()
             self.logger.info("👋 Baostock已退出登录")
+
+    def _relogin_if_network_error(self, error: Exception) -> None:
+        """
+        网络错误自愈：检测到解码/接收错误时重新登录重建socket连接
+        baostock 全局单连接，数据包损坏后必须重建连接才能恢复
+        """
+        err_str = str(error)
+        if any(k in err_str for k in ['codec', 'decode', '接收', '网络',
+                                      'socket', 'Connection', 'connection',
+                                      'timed out', 'Socket']):
+            try:
+                self.logger.warning("⚠️ 检测到网络异常，重新登录重建连接...")
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+                self.login_success = False
+                time.sleep(1.0)
+                self.login()
+            except Exception as e:
+                self.logger.error(f"❌ 重新登录失败: {e}")
     
     def get_stock_name(self, stock_code: str) -> str:
         """
@@ -174,6 +195,7 @@ class BaostockClient:
                 
         except Exception as e:
             self.logger.error(f"❌ 获取 {stock_code} 日线数据异常: {e}")
+            self._relogin_if_network_error(e)  # 网络错误自愈
             return pd.DataFrame()
     
     def get_weekly_data(self, stock_code: str, start_date: str, end_date: str,
@@ -227,6 +249,7 @@ class BaostockClient:
                 
         except Exception as e:
             self.logger.error(f"❌ 获取 {stock_code} 周线数据异常: {e}")
+            self._relogin_if_network_error(e)  # 网络错误自愈
             return pd.DataFrame()
     
     def get_monthly_data(self, stock_code: str, start_date: str, end_date: str,
@@ -280,6 +303,7 @@ class BaostockClient:
                 
         except Exception as e:
             self.logger.error(f"❌ 获取 {stock_code} 月线数据异常: {e}")
+            self._relogin_if_network_error(e)  # 网络错误自愈
             return pd.DataFrame()
     
     def get_financial_data(self, stock_code: str, current_price: float = None) -> Dict:

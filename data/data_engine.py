@@ -13,6 +13,7 @@ MysteryDataEngine - 数据抽象与缓存穿透控制层
 import os
 import sys
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -24,6 +25,10 @@ from db_manager import MysteryDB, DEFAULT_DB_PATH
 from baostock_client import BaostockClient
 
 logger = logging.getLogger(__name__)
+
+# baostock 全局单socket连接，多线程并发调用会导致数据包交错/utf-8解码错误
+# 使用模块级锁串行化所有 baostock 网络请求（线程安全）
+BAOSTOCK_LOCK = threading.Lock()
 
 # 行情默认回溯天数（日线约3年、周线约5年、月线约10年）
 DEFAULT_LOOKBACK_DAYS = {
@@ -121,31 +126,45 @@ class MysteryDataEngine:
             start_date = start.strftime('%Y-%m-%d')
             end_date = end.strftime('%Y-%m-%d')
 
-        # 按周期调用对应接口
-        try:
-            if period == 'daily':
-                df = self.client.get_daily_data(code, start_date, end_date)
-            elif period == 'weekly':
-                df = self.client.get_weekly_data(code, start_date, end_date)
-            elif period == 'monthly':
-                df = self.client.get_monthly_data(code, start_date, end_date)
-            else:
-                logger.error(f"❌ 未知周期: {period}")
+        # 按周期调用对应接口（网络解码错误自动重试3次，带退避）
+        import time as _time
+        max_net_retry = 3
+        for attempt in range(max_net_retry):
+            try:
+                # baostock 全局单socket：加锁串行化网络请求，防止多线程数据交错
+                with BAOSTOCK_LOCK:
+                    if period == 'daily':
+                        df = self.client.get_daily_data(code, start_date, end_date)
+                    elif period == 'weekly':
+                        df = self.client.get_weekly_data(code, start_date, end_date)
+                    elif period == 'monthly':
+                        df = self.client.get_monthly_data(code, start_date, end_date)
+                    else:
+                        logger.error(f"❌ 未知周期: {period}")
+                        return pd.DataFrame()
+
+                    if df is None or df.empty:
+                        # 空结果可能是网络解码失败被内部吞掉 → 重试
+                        if attempt < max_net_retry - 1:
+                            logger.warning(f"⚠️ {code} {period} 返回空(第{attempt+1}次)，退避重试...")
+                            _time.sleep(1.0 * (attempt + 1))
+                            continue
+                        return pd.DataFrame()
+
+                    # 3. 清洗 + 回填缓存（线程安全 upsert）
+                    df_clean = self._clean_kline(df)
+                    if auto_backfill and not df_clean.empty:
+                        self.db.upsert_kline(df_clean, code, period)
+                    return df_clean
+            except Exception as e:
+                err_str = str(e)
+                if attempt < max_net_retry - 1:
+                    logger.warning(f"⚠️ {code} {period} 网络异常(第{attempt+1}次): {err_str[:80]}，重试...")
+                    _time.sleep(1.0 * (attempt + 1))
+                    continue
+                logger.error(f"❌ 获取 {code} {period} 行情异常(重试{max_net_retry}次): {err_str[:150]}")
                 return pd.DataFrame()
-
-            if df is None or df.empty:
-                return pd.DataFrame()
-
-            # 3. 清洗 + 回填缓存（线程安全 upsert）
-            df_clean = self._clean_kline(df)
-            if auto_backfill and not df_clean.empty:
-                self.db.upsert_kline(df_clean, code, period)
-
-            return df_clean
-        except Exception as e:
-            import traceback
-            logger.error(f"❌ 获取 {code} {period} 行情异常: {e}\n{traceback.format_exc()}")
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     @staticmethod
     def _clean_kline(df: pd.DataFrame) -> pd.DataFrame:

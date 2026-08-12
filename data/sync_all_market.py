@@ -61,7 +61,7 @@ def get_all_a_shares(engine: MysteryDataEngine, include_index: bool = False) -> 
 
 def sync_worker(engine: MysteryDataEngine, code: str, periods: list,
                 days: int, progress: dict, lock: threading.Lock,
-                retry: int = 2) -> int:
+                retry: int = 3, delay: float = 0.5) -> int:
     """
     单只股票同步工作线程
     :return: 成功同步的K线行数
@@ -79,32 +79,34 @@ def sync_worker(engine: MysteryDataEngine, code: str, periods: list,
                     force_refresh=True)  # 强制刷新（增量覆盖）
                 if df is not None and not df.empty:
                     total_rows += len(df)
-            # 同步行业分类（可选，失败不阻塞）
-            try:
-                pass
-            except Exception:
-                pass
             with lock:
                 progress['ok'] += 1
             return total_rows
         except Exception as e:
+            # 网络解码错误（'utf-8' codec can't decode）或连接异常 → 重试
+            err_str = str(e)
+            if any(k in err_str for k in ['codec', 'decode', '接收', '网络', 'socket',
+                                          'Connection', 'connection', 'timed out']):
+                time.sleep(delay * (attempt + 1))  # 退避重试
+            else:
+                time.sleep(delay)
+            if attempt < retry - 1:
+                continue
             with lock:
                 progress['fail'] += 1
-            if attempt < retry - 1:
-                time.sleep(1)
-            else:
-                logger.warning(f"⚠️ {code} 同步失败(重试{retry}次): {e}")
+            logger.warning(f"⚠️ {code} 同步失败(重试{retry}次): {err_str[:120]}")
     return total_rows
 
 
 def sync_all_market(periods: list = None, days: int = None,
-                    threads: int = 8, limit: int = None,
+                    threads: int = 1, limit: int = None,
                     include_index: bool = False) -> dict:
     """
     全量同步主函数
     :param periods: 周期列表 ['daily','weekly','monthly']
     :param days: 回溯天数
-    :param threads: 线程数
+    :param threads: 线程数（⚠️ baostock为全局单socket连接，多线程并发会导致
+                    utf-8解码错误/数据交错，默认1=串行最稳定；2-4为折中）
     :param limit: 仅同步前N只（测试用）
     :param include_index: 是否包含指数
     """
@@ -155,7 +157,8 @@ if __name__ == '__main__':
     parser.add_argument('--period', choices=['daily', 'weekly', 'monthly'],
                         default='daily', help='同步周期')
     parser.add_argument('--days', type=int, default=None, help='回溯天数')
-    parser.add_argument('--threads', type=int, default=8, help='线程数')
+    parser.add_argument('--threads', type=int, default=1,
+                        help='线程数(baostock单连接,默认1串行最稳定;2-4折中)')
     parser.add_argument('--limit', type=int, default=None, help='仅同步前N只(测试)')
     parser.add_argument('--index', action='store_true', help='包含指数')
     args = parser.parse_args()
