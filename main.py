@@ -594,7 +594,7 @@ class StockAnalysisSystem:
                     indicators, industry_trend)
                 
                 # 平台突破分析
-                platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(indicators)
+                platform_breakthrough = self.mystery_logic.platform_breakthrough_analysis(indicators, stock_code)
                 
                 # 技术细节捕捉（破五反五、筹码集中度）
                 technical_detail = self.mystery_logic.technical_detail_capture(indicators)
@@ -633,6 +633,7 @@ class StockAnalysisSystem:
                     '平台状态': platform_breakthrough.get('平台状态', '未知'),
                     '平台范围': platform_breakthrough.get('平台范围'),
                     '平台详情': platform_breakthrough.get('详情', []),
+                    '自适应平台': platform_breakthrough.get('自适应平台'),
                     '建议操作': comprehensive.get('建议操作', '观望'),
                     '止损位': comprehensive.get('止损位'),
                     '破五反五': technical_detail.get('破五反五', False),
@@ -828,6 +829,11 @@ class StockAnalysisSystem:
                 pr = analysis.get('平台范围')
                 if pr:
                     print(f"   📦 平台箱体(近20日): 下沿 {pr.get('下沿', '-')} ~ 上沿 {pr.get('上沿', '-')}")
+                ap = analysis.get('自适应平台')
+                if ap and ap.get('POC') is not None:
+                    print(f"   🔬 自适应VAP-ATR平台: POC {ap.get('POC')} | "
+                          f"上轨 {ap.get('自适应上轨')} | 下轨 {ap.get('自适应下轨')} | "
+                          f"ATR {ap.get('ATR')}")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")

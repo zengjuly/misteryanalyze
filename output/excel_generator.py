@@ -233,6 +233,13 @@ class ExcelGenerator:
                     if pr:
                         detail_data.append(['平台箱体(近20日)', 
                                            f"下沿 {pr.get('下沿', '-')} ~ 上沿 {pr.get('上沿', '-')}", ''])
+                    ap = result.get('自适应平台')
+                    if ap and ap.get('POC') is not None:
+                        detail_data.append(['自适应平台方式', '自适应VAP-ATR', ''])
+                        detail_data.append(['POC(筹码控制点)', ap.get('POC'), ''])
+                        detail_data.append(['自适应上轨', ap.get('自适应上轨'), ''])
+                        detail_data.append(['自适应下轨', ap.get('自适应下轨'), ''])
+                        detail_data.append(['ATR', ap.get('ATR'), ''])
                     detail_data.append(['突破信号', '✅' if result.get('突破信号', False) else '❌', ''])
                     detail_data.append(['买横信号', '✅' if result.get('买横信号', False) else '❌', ''])
                     detail_data.append(['', '', ''])

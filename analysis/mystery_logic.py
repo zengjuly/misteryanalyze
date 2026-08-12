@@ -281,10 +281,12 @@ class MysteryLogic:
             self.logger.error(f"❌ 主升浪分析异常: {e}")
             return {'主升浪状态': '异常', '详情': [f"分析异常: {e}"]}
     
-    def platform_breakthrough_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
+    def platform_breakthrough_analysis(self, data: pd.DataFrame, stock_code: str = "") -> Dict[str, Any]:
         """
         平台突破与"买横"战法
+        使用自适应VAP-ATR平台（docs/design.md gemmi优化），融合固定箱体双重判定
         :param data: 包含技术指标的数据
+        :param stock_code: 股票代码（用于判断涨跌幅限制）
         :return: 平台突破分析结果
         """
         try:
@@ -293,6 +295,8 @@ class MysteryLogic:
                 '突破信号': False,
                 '买横信号': False,
                 '平台范围': None,  # 平台箱体区间
+                '固定箱体': None,  # 固定20日箱体
+                '自适应平台': None,  # 自适应VAP-ATR平台数据
                 '详情': []
             }
             
@@ -304,6 +308,25 @@ class MysteryLogic:
                 result['详情'].append(f"缺少必要列: {missing_cols}")
                 return result
             
+            # ============ 自适应VAP-ATR平台分析（gemmi优化） ============
+            try:
+                from analysis.adaptive_platform import analyze_adaptive_platform
+                adaptive = analyze_adaptive_platform(data, stock_code=stock_code)
+                if adaptive.get('平台范围'):
+                    result['自适应平台'] = adaptive
+                    result['平台范围'] = adaptive.get('平台范围')
+                    if adaptive.get('突破信号'):
+                        result['突破信号'] = True
+                        result['平台状态'] = '突破确认'
+                        result['详情'].append("✅ 自适应突破：收盘价>ATR上轨且阳线且重心>0.5")
+                    elif adaptive.get('POC') is not None:
+                        result['平台状态'] = '横盘整理'
+                        result['详情'].append(f"自适应平台: POC={adaptive['POC']}, "
+                                              f"上轨={adaptive['自适应上轨']}, 下轨={adaptive['自适应下轨']}")
+            except Exception as e:
+                result['详情'].append(f"自适应平台分析异常(降级固定箱体): {e}")
+            
+            # ============ 固定箱体分析（兼容保留，作为补充校验） ============
             # 获取最近20天数据
             recent_20_days = data.tail(20)
             
@@ -311,11 +334,16 @@ class MysteryLogic:
             platform_high = recent_20_days['最高价'].max()
             platform_low = recent_20_days['最低价'].min()
             if pd.notna(platform_high) and pd.notna(platform_low):
-                result['平台范围'] = {
+                fixed_box = {
                     '上沿': round(float(platform_high), 2),
                     '下沿': round(float(platform_low), 2),
-                    '周期': 20
+                    '周期': 20,
+                    '方式': '固定箱体',
                 }
+                result['固定箱体'] = fixed_box
+                # 平台范围优先用自适应平台（更精确），无自适应时用固定箱体
+                if not result.get('平台范围'):
+                    result['平台范围'] = fixed_box
                 result['详情'].append(
                     f"平台箱体(近20日): {platform_low:.2f} ~ {platform_high:.2f}")
             
