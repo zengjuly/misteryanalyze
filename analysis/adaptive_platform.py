@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# adaptive_platform.py - 自适应VAP-ATR平台中枢识别（基于gemmi分析优化报告 docs/design.md）
+# adaptive_platform.py - 自适应VAP-ATR平台中枢识别（基于gemmi分析优化报告 docs/design.md + docs/gemmi_an.md）
 """
 自适应 VAP-ATR 平台中枢识别算法
 ================================
-理论来源: docs/design.md（gemmi 分析优化报告）
+理论来源: docs/design.md（gemmi 分析优化报告）+ docs/gemmi_an.md（自适应周期）
 
 核心思想:
   传统平台识别依赖固定周期高低点（唐奇安通道）或固定百分比，存在两大缺陷:
@@ -18,11 +18,83 @@
      - MTR(Modified True Range): 涨停时用过去14日均值填充, 防止ATR冻结归零
      - K线重心 P_core: 用 Low+G×(High-Low) 替代收盘价, 防止长上影线误导筹码分布
      - 实体突破: Close>上轨 且 阳线 且 重心>0.5 且 非涨停次日, 排除假突破
+  ④ 自适应检测周期（gemmi_an.md）:
+     - N_base = 70% / 日均换手率（筹码换手周期）, clip 到 [10, 60]
+     - 小盘妖股（换手15-20%）→ 5-10日窗口; 大盘蓝筹（换手0.5-1.5%）→ 60日窗口
+     - 双周期嵌套: 慢窗口(POC筹码分布, 自适应N) + 快窗口(ATR波动率, clip(N/4, 10, 14))
+     - k 自适应: 高换手活跃股放宽(2.2), 低换手蓝筹收紧(1.5)
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional
+
+
+def calculate_adaptive_lookback(
+    data: pd.DataFrame,
+    min_lookup: int = 10,
+    max_lookup: int = 60,
+    turnover_col: str = None,
+) -> Dict[str, Any]:
+    """
+    根据A股个股换手率，动态计算自适应震荡检测周期（docs/gemmi_an.md 核心算法）
+
+    核心准则: 时间周期只是表象，资金换手周期才是本质。
+    让筹码完成一次充分的换手（Turnover Cycle）作为检测窗口锚定点。
+
+    :param data: 含换手率的日线DataFrame
+    :param min_lookup: 最小检测周期限制（防止妖股周期太短导致统计失真）
+    :param max_lookup: 最大检测周期限制（防止大盘股周期太长导致信号完全滞后）
+    :param turnover_col: 换手率列名（默认自动识别'换手率'/'turnover_rate'/'turn'）
+    :return: {adaptive_n, avg_turnover, theoretical_n, min_lookup, max_lookup}
+    """
+    result = {
+        'adaptive_n': None,   # 最终自适应检测周期（交易日数）
+        'avg_turnover': None, # 近20日日均换手率(%)
+        'theoretical_n': None,  # 70%筹码换手理论天数
+        'min_lookup': min_lookup,
+        'max_lookup': max_lookup,
+    }
+
+    if data is None or len(data) < 20:
+        result['adaptive_n'] = 30  # 数据不足默认30
+        result['detail'] = '数据不足20日，使用默认周期30'
+        return result
+
+    # 识别换手率列
+    if turnover_col is None:
+        for candidate in ['换手率', 'turnover_rate', 'turn']:
+            if candidate in data.columns:
+                turnover_col = candidate
+                break
+    if turnover_col is None or turnover_col not in data.columns:
+        result['adaptive_n'] = 30
+        result['detail'] = f'缺少换手率列({turnover_col})，使用默认周期30'
+        return result
+
+    # 1. 计算过去20天的日均换手率（避免单日异动干扰）
+    turnover = pd.to_numeric(data[turnover_col], errors='coerce')
+    avg_turnover = turnover.tail(20).mean()
+
+    if pd.isna(avg_turnover) or avg_turnover <= 0:
+        result['adaptive_n'] = 30
+        result['detail'] = '换手率数据异常，使用默认周期30'
+        return result
+
+    # 2. 根据70%筹码换手率公式计算理论天数（A股常有锁仓筹码，取70%为标准）
+    theoretical_n = 70.0 / avg_turnover
+
+    # 3. clip限制在合理区间 + 转整数
+    adaptive_n = int(round(np.clip(theoretical_n, min_lookup, max_lookup)))
+
+    result['adaptive_n'] = adaptive_n
+    result['avg_turnover'] = round(float(avg_turnover), 2)
+    result['theoretical_n'] = round(float(theoretical_n), 1)
+    result['detail'] = (
+        f"换手率自适应周期: 近20日日均换手{avg_turnover:.2f}%, "
+        f"理论N={theoretical_n:.1f}日, 自适应N={adaptive_n}日"
+    )
+    return result
 
 
 def calculate_adaptive_vap_atr(
@@ -125,18 +197,18 @@ def calculate_adaptive_vap_atr(
 def analyze_adaptive_platform(
     data: pd.DataFrame,
     stock_code: str = "",
-    n: int = 60,
-    atr_m: int = 14,
-    k: float = 1.8,
+    n: int = None,
+    atr_m: int = None,
+    k: float = None,
 ) -> Dict[str, Any]:
     """
     自适应平台分析入口（供主流程调用）
 
-    :param data: 含 收盘价/最高价/最低价/开盘价/成交量 的日线DataFrame
+    :param data: 含 收盘价/最高价/最低价/开盘价/成交量/换手率 的日线DataFrame
     :param stock_code: 股票代码（用于判断主板/创业板/科创板，决定涨停阈值）
-    :param n: POC窗口
-    :param atr_m: ATR窗口
-    :param k: 波动率乘数
+    :param n: POC窗口（None=自动按换手率自适应，见 calculate_adaptive_lookback）
+    :param atr_m: ATR窗口（None=自适应: clip(round(n/4), 10, 14)，双周期嵌套快窗口）
+    :param k: 波动率乘数（None=按换手率自适应: 高换手活跃股2.2/默认1.8/低换手蓝筹1.5）
     :return: 分析结果字典
     """
     result = {
@@ -147,6 +219,7 @@ def analyze_adaptive_platform(
         'ATR': None,
         '突破信号': False,
         '平台范围': None,
+        '自适应周期': None,   # gemmi_an.md: 换手率自适应检测周期
         '详情': [],
     }
 
@@ -163,6 +236,27 @@ def analyze_adaptive_platform(
     else:
         market_type = "MainBoard"
 
+    # ===== 换手率自适应检测周期（gemmi_an.md） =====
+    adaptive_info = calculate_adaptive_lookback(data)
+    adaptive_n = adaptive_info.get('adaptive_n')
+    if n is None:
+        n = adaptive_n if adaptive_n else 30
+    if atr_m is None:
+        # 快窗口: clip(round(n/4), 10, 14)，双周期嵌套中的波动率快窗口
+        atr_m = int(np.clip(round(n / 4), 10, 14))
+    if k is None:
+        # k 自适应: 高换手活跃股放宽(2.2), 低换手蓝筹收紧(1.5)
+        avg_turnover = adaptive_info.get('avg_turnover')
+        if avg_turnover is not None:
+            if avg_turnover >= 10:
+                k = 2.2
+            elif avg_turnover >= 3:
+                k = 1.8
+            else:
+                k = 1.5
+        else:
+            k = 1.8
+
     try:
         df = calculate_adaptive_vap_atr(data, n=n, atr_m=atr_m, k=k, market_type=market_type)
 
@@ -173,6 +267,15 @@ def analyze_adaptive_platform(
         lower = latest.get('platform_lower')
         atr_val = latest.get('matr')
         is_brk = bool(latest.get('is_breakout', False))
+
+        # 记录自适应周期信息
+        result['自适应周期'] = {
+            'adaptive_n': n,
+            'atr_m': atr_m,
+            'k': k,
+            'avg_turnover': adaptive_info.get('avg_turnover'),
+            'theoretical_n': adaptive_info.get('theoretical_n'),
+        }
 
         if pd.notna(poc) and pd.notna(upper) and pd.notna(lower):
             result['POC'] = round(float(poc), 2)
@@ -187,9 +290,12 @@ def analyze_adaptive_platform(
                 '周期': n,
                 '方式': '自适应VAP-ATR',
             }
+            # 自适应周期说明（换手率驱动）
+            if adaptive_info.get('detail'):
+                result['详情'].append(adaptive_info['detail'])
             result['详情'].append(
                 f"自适应平台: POC={poc:.2f}, 上轨={upper:.2f}, 下轨={lower:.2f}"
-                f" (窗口{n}日, ATR{atr_m}日, k={k})"
+                f" (慢窗口{n}日, 快ATR{atr_m}日, k={k})"
             )
             if is_brk:
                 result['详情'].append(

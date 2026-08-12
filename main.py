@@ -834,6 +834,11 @@ class StockAnalysisSystem:
                     print(f"   🔬 自适应VAP-ATR平台: POC {ap.get('POC')} | "
                           f"上轨 {ap.get('自适应上轨')} | 下轨 {ap.get('自适应下轨')} | "
                           f"ATR {ap.get('ATR')}")
+                    ap_cycle = ap.get('自适应周期')
+                    if ap_cycle:
+                        print(f"   ⏱️ 自适应周期(换手率驱动): N={ap_cycle.get('adaptive_n')}日 "
+                              f"(日均换手{ap_cycle.get('avg_turnover')}%, 理论N={ap_cycle.get('theoretical_n')}) | "
+                              f"快ATR={ap_cycle.get('atr_m')}日 k={ap_cycle.get('k')}")
                 print(f"🔍 主要形态: {analysis.get('主要形态', '无')}")
                 print(f"📊 形态置信度: {analysis.get('形态置信度', 0):.1f}%")
                 print(f"🎯 破五反五: {'✅' if analysis.get('破五反五', False) else '❌'}")

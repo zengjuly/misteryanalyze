@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.1.0
+- **版本**: 1.2.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-10
+- **更新日期**: 2026-08-12
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -150,8 +150,9 @@ class MysteryLogic:
     def comprehensive_analysis(data: pd.DataFrame, market_data=None) -> dict  # 综合评分+建议
 
 class AdaptivePlatform:  # analysis/adaptive_platform.py
+    def calculate_adaptive_lookback(data, min_lookup=10, max_lookup=60) -> dict  # 换手率自适应周期
     def calculate_adaptive_vap_atr(data, n=60, atr_m=14, k=1.8, market_type) -> pd.DataFrame
-    def analyze_adaptive_platform(data, stock_code, n=60, atr_m=14, k=1.8) -> dict  # POC/上下轨/突破
+    def analyze_adaptive_platform(data, stock_code, n=None, atr_m=None, k=None) -> dict  # POC/上下轨/突破/自适应周期
     def cns_adaptive_vap_atr(...)  # 兼容 docs/design.md 函数名
 
 class PatternRecognition:
@@ -356,9 +357,37 @@ class ExceptionHandler:
 - `Close > 上轨` 且 `Close > Open`（阳线）且 `G_t > 0.5`（重心偏上，非长上影假突破）
 - 且前一日非涨停（排除一字板复牌首日情绪溢价）
 
-**输出**：`{平台方式: '自适应VAP-ATR', POC, 自适应上轨, 自适应下轨, ATR, 突破信号, 平台范围}`
+**输出**：`{平台方式: '自适应VAP-ATR', POC, 自适应上轨, 自适应下轨, ATR, 突破信号, 平台范围, 自适应周期}`
 
 平台突破分析将自适应平台与固定箱体**双重判定**：自适应突破信号优先（更精确），固定箱体逻辑保留作补充校验。`平台范围` 字段输出自适应箱体（含 POC）。
+
+---
+
+### 3.5.2 自适应检测周期（gemmi_an.md 优化）— 非标准指标 ★★
+
+检测周期不固定，而由**换手率循环**决定（时间周期只是表象，资金换手周期才是本质）：
+
+**① 基础公式（筹码换手周期）**：
+- `日均换手率 D̄ = mean(近20日换手率)`
+- `理论N = 70% / D̄`（取70%换手而非100%，考虑A股锁仓筹码）
+- `自适应N = clip(理论N, 10, 60)`（防妖股周期太短失真 / 防蓝筹周期太长滞后）
+- 例：妖股换手15% → N=10；白马换手0.8% → N=60；中等换手3% → N=23
+
+**② 双周期嵌套（快窗口 + 慢窗口）**：
+- 慢窗口（POC 筹码分布）：`n = 自适应N`（锚定筹码控制点）
+- 快窗口（ATR 波动率）：`atr_m = clip(round(n/4), 10, 14)`（捕捉近两周波动率异动）
+
+**③ 波动率乘数 k 自适应**：
+- 日均换手率 ≥10%（活跃股/妖股）→ k=2.2（放宽箱体容忍剧烈洗盘）
+- 日均换手率 3~10% → k=1.8（默认）
+- 日均换手率 <3%（蓝筹/白马）→ k=1.5（收紧箱体提高灵敏度）
+
+**④ 多周期共振架构**（T+1 必修课，工程架构）：
+- 周线（Window≈26）：确认大趋势（8项指标得分 > 0.6）
+- 日线（Window=自适应N）：定位自适应 VAP 箱体，等待 `Close > 上轨`
+- 30/60分钟（Window≈20）：突破瞬间量能"三振"确认（分时数据，系统当前未接入，预留）
+
+**输出**：`自适应周期 = {adaptive_n, atr_m, k, avg_turnover, theoretical_n}`（随报告展示）
 
 ---
 
@@ -734,6 +763,7 @@ class ExceptionHandler:
 **系统当前能力**：
 - 三振共振（个股+行业+大盘真实数据）判断
 - 自适应 VAP-ATR 平台中枢（POC 筹码控制点 + 波动率自适应通道，A股涨跌停修正）
+- 自适应检测周期（换手率驱动: N=70%/日均换手, 双周期嵌套快ATR窗口, k自适应）
 - 主升浪状态判定（带判定依据）+ 主升浪8项指标对比表
 - 多周期（日/周/月线）共振分析
 - 基本面数据（ROE/EPS/PE/PB/股息率）+ 板块评级

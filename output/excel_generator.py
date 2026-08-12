@@ -240,6 +240,13 @@ class ExcelGenerator:
                         detail_data.append(['自适应上轨', ap.get('自适应上轨'), ''])
                         detail_data.append(['自适应下轨', ap.get('自适应下轨'), ''])
                         detail_data.append(['ATR', ap.get('ATR'), ''])
+                        ap_cycle = ap.get('自适应周期')
+                        if ap_cycle:
+                            detail_data.append(['自适应周期N', f"{ap_cycle.get('adaptive_n')}日 "
+                                                             f"(近20日均换手{ap_cycle.get('avg_turnover')}%, "
+                                                             f"理论N={ap_cycle.get('theoretical_n')})", ''])
+                            detail_data.append(['快窗口ATR', f"{ap_cycle.get('atr_m')}日", ''])
+                            detail_data.append(['波动率乘数k', ap_cycle.get('k'), ''])
                     detail_data.append(['突破信号', '✅' if result.get('突破信号', False) else '❌', ''])
                     detail_data.append(['买横信号', '✅' if result.get('买横信号', False) else '❌', ''])
                     detail_data.append(['', '', ''])
