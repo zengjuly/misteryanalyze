@@ -68,6 +68,8 @@ class MarketDataClient:
         for s in self.fallback_list:
             if s and s != self.primary and s not in self.source_order:
                 self.source_order.append(s)
+        # tdx 空结果缓存：本地数据包缺失时避免每次调用重复空转
+        self._tdx_empty_codes = set()
         self._bs_logged_in = False
 
     # ============ 对外接口 ============
@@ -97,10 +99,16 @@ class MarketDataClient:
         主备源退避获取：
         先主源重试 retry_times 次（指数退避）→ 失败切换备用源 → 全部失败返回空
         """
-        sources = self.source_order
+        # tdx 空结果缓存：本地数据包缺失时跳过 tdx 源（避免重复空转）
+        if self._tdx_empty_codes:
+            sources = [s for s in self.source_order if not (
+                s == "tdx_local" and code in self._tdx_empty_codes)]
+        else:
+            sources = self.source_order
 
         last_error = None
         for src in sources:
+            switched_fast = False  # tdx 本地无数据快速切换标记
             for attempt in range(self.retry_times):
                 try:
                     df = self._fetch_from_source(src, code, period, start_date, end_date)
@@ -109,17 +117,23 @@ class MarketDataClient:
                         df = self._normalize_columns(df)
                         logger.info(f"[{src}] {code} {period} 获取成功，{len(df)} 条")
                         return df
-                    # 空结果视为失败（可能是网络解码错误被内部吞掉）
+                    # 空结果视为失败；tdx_local 本地无文件重试无意义，直接切换下一源
                     last_error = RuntimeError(f"{src} 返回空数据")
+                    if src == "tdx_local":
+                        self._tdx_empty_codes.add(code)
+                        logger.info(f"[tdx_local] {code} {period} 本地无数据，快速切换下一源")
+                        switched_fast = True
+                        break  # 跳过该源剩余重试
                 except Exception as e:
                     last_error = e
                     wait = self.retry_delay * (2 ** attempt)
                     logger.warning(f"[{src}] {code} {period} 第{attempt+1}次失败: "
                                    f"{str(e)[:100]}，{wait:.1f}s后重试")
                     time.sleep(wait)
-            logger.error(f"[{src}] {code} {period} 重试{self.retry_times}次耗尽，"
-                         f"切换下一数据源")
-        logger.error(f"❌ {code} {period} 所有数据源均失败，最后错误: {last_error}")
+            if not switched_fast:
+                logger.warning(f"[{src}] {code} {period} 重试{self.retry_times}次耗尽，"
+                               f"切换下一数据源")
+        logger.warning(f"⚠️ {code} {period} 所有数据源均失败，最后错误: {last_error}")
         return pd.DataFrame()
 
     @staticmethod
