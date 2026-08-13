@@ -42,7 +42,10 @@ class StockAnalysisSystem:
         self.config['output_dir'] = output_dir
         
         # 初始化各个模块
-        self.baostock_client = BaostockClient()
+        # 多源退避客户端: config含data_source段时走 tdx_local→akshare→baostock 三级退避
+        # （无data_source配置时保持原baostock单源行为）
+        from data.multi_source_client import MultiSourceClient
+        self.baostock_client = MultiSourceClient(self.config)
         self.data_processor = DataProcessor(self.baostock_client)
         self.ma_indicators = MAIndicators()
         self.trend_indicators = TrendIndicators()

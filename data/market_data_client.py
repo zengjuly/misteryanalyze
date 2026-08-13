@@ -105,6 +105,8 @@ class MarketDataClient:
                 try:
                     df = self._fetch_from_source(src, code, period, start_date, end_date)
                     if df is not None and not df.empty:
+                        # 统一列名标准化（不同源可能返回 date/日期 差异）
+                        df = self._normalize_columns(df)
                         logger.info(f"[{src}] {code} {period} 获取成功，{len(df)} 条")
                         return df
                     # 空结果视为失败（可能是网络解码错误被内部吞掉）
@@ -119,6 +121,22 @@ class MarketDataClient:
                          f"切换下一数据源")
         logger.error(f"❌ {code} {period} 所有数据源均失败，最后错误: {last_error}")
         return pd.DataFrame()
+
+    @staticmethod
+    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        统一列名标准化：英文列 → 中文标准列
+        兼容 baostock（date/开盘价...混合）与 akshare/tdx（全中文）输出
+        """
+        if df is None or df.empty:
+            return df
+        rename_map = {
+            'date': '日期', 'open': '开盘价', 'high': '最高价',
+            'low': '最低价', 'close': '收盘价', 'volume': '成交量',
+            'amount': '成交额', 'turn': '换手率', 'pctChg': '涨跌幅',
+        }
+        df = df.rename(columns=rename_map)
+        return df
 
     def _fetch_from_source(self, src: str, code: str, period: str,
                            start_date: str, end_date: str) -> pd.DataFrame:
@@ -140,6 +158,9 @@ class MarketDataClient:
             adjustflag = ADJUSTFLAG_MAP.get(adjust, "2")
             # baostock 全局单socket：加锁串行化（线程安全）
             with BAOSTOCK_LOCK:
+                # 确保已登录（baostock 未登录时查询返回 'you don't login'）
+                if not self._bs_logged_in:
+                    self._bs_logged_in = self.bs_client.login()
                 if period == "daily":
                     return self.bs_client.get_daily_data(code, start_date, end_date,
                                                          adjustflag=adjustflag)
