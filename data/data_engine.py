@@ -43,6 +43,16 @@ class MysteryDataEngine:
         self.db = MysteryDB(db_path)
         self.client = baostock_client if baostock_client else BaostockClient()
         self._logged_in = False
+        # K线保留条数配置（循环覆盖，控制存储成本）
+        self.kline_limit = {}
+        if config and config.get('data_source'):
+            kl = config['data_source'].get('kline_limit', {})
+            if kl.get('enable_cleanup', True):
+                self.kline_limit = {
+                    'daily': int(kl.get('daily', 2000)),
+                    'weekly': int(kl.get('weekly', 500)),
+                    'monthly': int(kl.get('monthly', 300)),
+                }
         # 双源退避统一客户端（config 含 data_source 段时启用）
         self.market_client = None
         if config and config.get('data_source'):
@@ -182,7 +192,8 @@ class MysteryDataEngine:
                     # 3. 清洗 + 回填缓存（线程安全 upsert）
                     df_clean = self._clean_kline(df)
                     if auto_backfill and not df_clean.empty:
-                        self.db.upsert_kline(df_clean, code, period)
+                        max_rows = self.kline_limit.get(period) if self.kline_limit else None
+                        self.db.upsert_kline(df_clean, code, period, max_rows=max_rows)
                     return df_clean
             except Exception as e:
                 err_str = str(e)

@@ -239,13 +239,27 @@ debug:
   # 调试工具
   debug_tools: []
 
-# 数据源配置（双源退避方案: AKShare主源 + baostock备用源）
+# 数据源配置（双源退避方案: 通达信本地主源 + AKShare + baostock备用源）
 data_source:
-  primary: "akshare"           # 主源：akshare / baostock
-  fallback: "baostock"         # 备用源，可与主源相同（仅用单源）
+  primary: "tdx_local"           # 主源：tdx_local(通达信本地) / akshare / baostock
+  fallback: ["akshare", "baostock"]  # 备用源列表（依次退避）
   retry_times: 3               # 每个源最大重试次数
   retry_delay: 2               # 初始退避延迟（秒），指数递增
   prefer_resample: true        # true=强制日K重采样周/月；false=优先原生数据
   adjust: "qfq"                # 复权：qfq前复权 / hfq后复权 / none不复权
   rate_limit_akshare: 0.3      # AKShare 请求间隔（秒）
   timeout: 30                  # 单次请求超时（秒）
+
+  # 通达信本地数据源配置
+  tdx:
+    vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # 默认绝对路径(仓库外)，可用环境变量TDX_VIPDOC_DIR覆盖
+    enable: true               # 是否启用本地源
+    auto_download: false       # 是否自动触发下载（建议手动/定时）
+
+  # K线保留条数（循环覆盖，控制存储成本）
+  kline_limit:
+    daily: 2000
+    weekly: 500
+    monthly: 300
+    enable_cleanup: true
+    cleanup_after_upsert: true

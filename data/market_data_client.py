@@ -32,6 +32,7 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 from akshare_client import AkshareClient
 from baostock_client import BaostockClient, BAOSTOCK_LOCK
 from kline_resampler import KLineResampler
+from tdx_local_client import TdxLocalClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +49,25 @@ class MarketDataClient:
             rate_limit=ds_cfg.get("rate_limit_akshare", 0.3),
             timeout=ds_cfg.get("timeout", 30))
         self.bs_client = BaostockClient()
+        # 通达信本地数据源（tdx_local）
+        tdx_cfg = ds_cfg.get("tdx", {})
+        self.tdx_client = TdxLocalClient(
+            vipdoc_dir=tdx_cfg.get("vipdoc_dir"),
+            enable=tdx_cfg.get("enable", True))
         self.resampler = KLineResampler()
         self.primary = ds_cfg.get("primary", "akshare")
-        self.fallback = ds_cfg.get("fallback", "baostock")
+        # fallback 支持: 字符串或列表
+        fb = ds_cfg.get("fallback", "baostock")
+        self.fallback_list = fb if isinstance(fb, list) else [fb]
         self.retry_times = int(ds_cfg.get("retry_times", 3))
         self.retry_delay = float(ds_cfg.get("retry_delay", 2))
         self.prefer_resample = bool(ds_cfg.get("prefer_resample", True))
         self.adjust = ds_cfg.get("adjust", "qfq")
+        # 源顺序: 主源 + 去重后的备用源列表
+        self.source_order = [self.primary]
+        for s in self.fallback_list:
+            if s and s != self.primary and s not in self.source_order:
+                self.source_order.append(s)
         self._bs_logged_in = False
 
     # ============ 对外接口 ============
@@ -84,9 +97,7 @@ class MarketDataClient:
         主备源退避获取：
         先主源重试 retry_times 次（指数退避）→ 失败切换备用源 → 全部失败返回空
         """
-        sources = [self.primary]
-        if self.fallback and self.fallback != self.primary:
-            sources.append(self.fallback)
+        sources = self.source_order
 
         last_error = None
         for src in sources:
@@ -113,6 +124,11 @@ class MarketDataClient:
                            start_date: str, end_date: str) -> pd.DataFrame:
         """从指定源获取数据"""
         adjust = self.adjust
+        if src == "tdx_local":
+            # 通达信本地源仅支持日线；周/月由上层 prefer_resample 重采样
+            if period == "daily":
+                return self.tdx_client.get_daily_data(code, start_date, end_date)
+            return pd.DataFrame()
         if src == "akshare":
             if period == "daily":
                 return self.ak_client.get_daily_data(code, start_date, end_date, adjust=adjust)

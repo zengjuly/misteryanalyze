@@ -178,12 +178,14 @@ class MysteryDB:
                 conn.close()
 
     # ============ 行情数据 ============
-    def upsert_kline(self, df: pd.DataFrame, code: str, period: str) -> int:
+    def upsert_kline(self, df: pd.DataFrame, code: str, period: str,
+                     max_rows: int = None) -> int:
         """
         线程安全增量写入行情（(code,date,period)联合主键，INSERT OR REPLACE）
         :param df: 含 date/open/high/low/close/volume/amount/turn 等列的DataFrame
         :param code: 证券代码（9位 sh.600150）
         :param period: 周期 daily/weekly/monthly
+        :param max_rows: 可选，写入后仅保留最新max_rows条（循环覆盖）
         """
         if df is None or df.empty:
             return 0
@@ -208,7 +210,48 @@ class MysteryDB:
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, rows)
                 conn.commit()
+                # 循环覆盖：限制该股票该周期保留条数
+                if max_rows and max_rows > 0:
+                    self.trim_kline(code, period, max_rows)
                 return len(rows)
+            finally:
+                conn.close()
+
+    def trim_kline(self, code: str, period: str = 'daily',
+                   max_rows: int = 2000) -> int:
+        """
+        删除旧数据，仅保留最新 max_rows 条（循环覆盖，控制存储成本）
+        :param code: 证券代码
+        :param period: 周期 daily/weekly/monthly
+        :param max_rows: 保留最大条数
+        :return: 删除的行数
+        """
+        if not max_rows or max_rows <= 0:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                # 找出应保留的最新 max_rows 条日期
+                keep_dates = conn.execute(
+                    """SELECT date FROM stock_kline_data
+                       WHERE code=? AND period=?
+                       ORDER BY date DESC LIMIT ?""",
+                    (code, period, max_rows)).fetchall()
+                if not keep_dates:
+                    return 0
+                keep_set = {r[0] for r in keep_dates}
+                # 删除不在保留集合中的旧数据
+                cur = conn.execute(
+                    """DELETE FROM stock_kline_data
+                       WHERE code=? AND period=? AND date NOT IN (%s)"""
+                    % ",".join("?" * len(keep_set)),
+                    [code, period] + list(keep_set))
+                conn.commit()
+                deleted = cur.rowcount
+                if deleted > 0:
+                    logger.debug(f"🗑️ {code} {period} 清理旧数据 {deleted} 条"
+                                 f"（保留最近{max_rows}条）")
+                return deleted
             finally:
                 conn.close()
 

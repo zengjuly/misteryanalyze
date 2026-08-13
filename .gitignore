@@ -178,3 +178,8 @@ temp_*
 temp/
 cache_*
 cache/
+# 通达信本地数据（大体积二进制，不入库）
+data/tdx_vipdoc/
+*.zip
+*.day
+*.fin
