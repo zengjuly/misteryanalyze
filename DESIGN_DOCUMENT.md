@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.4.0
+- **版本**: 1.5.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-12
+- **更新日期**: 2026-08-13
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -76,7 +76,10 @@
 
 #### 2.2.1 数据模块 (`data/`)
 **职责**: 负责股票数据的获取和预处理
-- `baostock_client.py`: baostock 数据获取客户端
+- `baostock_client.py`: baostock 数据获取客户端（含全局锁 BAOSTOCK_LOCK）
+- `akshare_client.py`: AKShare 数据源客户端（双源退避主源）★
+- `kline_resampler.py`: 日K→周K/月K 聚合器 ★
+- `market_data_client.py`: 统一数据入口（主备退避 + 重采样选择）★
 - `data_processor.py`: 数据预处理和清洗
 - `db_manager.py`: SQLite 本地缓存数据库（三表/联合主键/索引/safe_upsert）★
 - `data_engine.py`: Cache-Aside 数据抽象层（MysteryDataEngine，缓存穿透回填）★
@@ -648,6 +651,57 @@ class ExceptionHandler:
 2. 每日分析：闭市后 `python data/run_market_scan.py`（增量计算+信号捕获）
 3. 成果查看：output 目录报告，支持自动化决策
 
+### 4.5 双源退避与日K重采样（docs/sources.md）— ★★
+
+**总体架构**：
+```
+上层分析模块（DataProcessor / MysteryDataEngine / main）
+          ↓
+   MarketDataClient（统一数据入口，主备切换 + 退避）
+          ↓
+  ┌─────────────────┬─────────────────┐
+  │ Primary Source  │ Fallback Source │
+  │   (AKShare)     │   (Baostock)    │
+  └─────────────────┴─────────────────┘
+          ↓
+  统一清洗层（_clean_kline，列名映射）
+          ↓
+  KLineResampler（日K→周K/月K聚合）
+          ↓
+  SQLite Cache（stock_kline_data 表）
+```
+
+**① 数据源封装（data/akshare_client.py, AkshareClient）**：
+- 接口与 `BaostockClient` 对齐：login/logout/get_daily/weekly/monthly_data
+- 输出统一中文列：`日期/代码/开盘价/最高价/最低价/收盘价/成交量/成交额/换手率/涨跌幅`
+- 内置限速（rate_limit 默认0.3s），AKShare 为爬虫源需防高频被封
+
+**② 日K重采样（data/kline_resampler.py, KLineResampler）**：
+- 周K：`W-FRI` 聚合（周五收）；月K：`ME` 聚合（月末，pandas3.0）
+- 聚合规则：开=first 高=max 低=min 收=last 量=sum 额=sum 换手=sum
+- 涨跌幅用收盘价 pct_change 重算，保证多周期数据与日K严格对齐
+
+**③ 统一入口（data/market_data_client.py, MarketDataClient）**：
+- 主备源退避：主源重试 `retry_times` 次（指数退避 `retry_delay×2^n`）→ 失败切备用源
+- `prefer_resample=true`：周/月K 由日K重采样生成（默认，周期对齐）
+- baostock 调用复用全局锁 `BAOSTOCK_LOCK`（线程安全）；AKShare 内置限速
+
+**④ 配置（config/config.yaml, data_source 段）**：
+```yaml
+data_source:
+  primary: "akshare"        # 主源：akshare / baostock
+  fallback: "baostock"      # 备用源
+  retry_times: 3            # 每源最大重试次数
+  retry_delay: 2            # 初始退避延迟（秒），指数递增
+  prefer_resample: true     # true=强制日K重采样周/月
+  adjust: "qfq"             # 复权：qfq/hfq/none
+  rate_limit_akshare: 0.3   # AKShare 请求间隔（秒）
+  timeout: 30               # 单次请求超时（秒）
+```
+
+**⑤ 集成方式**：`MysteryDataEngine(db_path, config)` 传入含 `data_source` 段的 config 即启用双源模式；
+不传 config 保持原 baostock 单源逻辑（向后兼容）。
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
@@ -868,5 +922,6 @@ class ExceptionHandler:
 - 报告自动生成（Excel/HTML/文本/仪表板）+ git 自动同步远端
 - 每日定时任务（周一至五 15:30）自动分析
 - **数据中枢**（SQLite缓存 + Cache-Aside数据引擎 + 全量多线程同步 + 全市场扫描信号捕获）
+- **双源退避**（AKShare主源 + baostock备用源自动切换 + 日K重采样周/月K对齐）
 
 后续开发人员可以基于此文档进行系统开发、维护和扩展，确保项目的顺利进行和持续发展。
