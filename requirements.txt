@@ -5,8 +5,9 @@
 pandas>=1.3.0
 numpy>=1.20.0
 
-# 股票数据源
+# 股票数据源（双源退避: AKShare主源 + baostock备用源）
 baostock>=0.8.8
+akshare>=1.12.0
 
 # Excel输出
 openpyxl>=3.0.0

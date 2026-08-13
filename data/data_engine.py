@@ -22,13 +22,9 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db_manager import MysteryDB, DEFAULT_DB_PATH
-from baostock_client import BaostockClient
+from baostock_client import BaostockClient, BAOSTOCK_LOCK
 
 logger = logging.getLogger(__name__)
-
-# baostock 全局单socket连接，多线程并发调用会导致数据包交错/utf-8解码错误
-# 使用模块级锁串行化所有 baostock 网络请求（线程安全）
-BAOSTOCK_LOCK = threading.Lock()
 
 # 行情默认回溯天数（日线约3年、周线约5年、月线约10年）
 DEFAULT_LOOKBACK_DAYS = {
@@ -39,13 +35,20 @@ DEFAULT_LOOKBACK_DAYS = {
 
 
 class MysteryDataEngine:
-    """Cache-Aside 数据引擎：本地缓存 + baostock 穿透回填"""
+    """Cache-Aside 数据引擎：本地缓存 + 双源（AKShare主/baostock备）穿透回填"""
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH,
-                 baostock_client: BaostockClient = None):
+                 baostock_client: BaostockClient = None,
+                 config: dict = None):
         self.db = MysteryDB(db_path)
         self.client = baostock_client if baostock_client else BaostockClient()
         self._logged_in = False
+        # 双源退避统一客户端（config 含 data_source 段时启用）
+        self.market_client = None
+        if config and config.get('data_source'):
+            from market_data_client import MarketDataClient
+            self.market_client = MarketDataClient(config)
+            self.client = self.market_client.bs_client  # 兼容旧接口
 
     # ============ 连接管理 ============
     def ensure_login(self) -> bool:
@@ -129,6 +132,31 @@ class MysteryDataEngine:
         # 按周期调用对应接口（网络解码错误自动重试3次，带退避）
         import time as _time
         max_net_retry = 3
+
+        # 双源退避模式：走 MarketDataClient（主备切换 + 日K重采样）
+        if self.market_client is not None:
+            try:
+                if period == 'daily':
+                    df = self.market_client.fetch_daily(code, start_date, end_date)
+                elif period == 'weekly':
+                    df = self.market_client.fetch_weekly(code, start_date, end_date)
+                elif period == 'monthly':
+                    df = self.market_client.fetch_monthly(code, start_date, end_date)
+                else:
+                    logger.error(f"❌ 未知周期: {period}")
+                    return pd.DataFrame()
+            except Exception as e:
+                logger.error(f"❌ 双源获取 {code} {period} 异常: {str(e)[:150]}")
+                return pd.DataFrame()
+
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df_clean = self._clean_kline(df)
+            if auto_backfill and not df_clean.empty:
+                self.db.upsert_kline(df_clean, code, period)
+            return df_clean
+
+        # 单源模式（兼容旧逻辑）：baostock 直连 + 重试
         for attempt in range(max_net_retry):
             try:
                 # baostock 全局单socket：加锁串行化网络请求，防止多线程数据交错

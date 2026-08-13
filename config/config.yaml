@@ -110,8 +110,8 @@ mystery:
   
   # 平台突破参数
   platform_volume_ratio: 1.5
-  platform_days_min: 20
-  platform_days_max: 60
+  platform_days_min: 60
+  platform_days_max: 250
   
   # 形态识别参数
   head_shoulder_reliability: 0.7
@@ -238,3 +238,14 @@ debug:
   
   # 调试工具
   debug_tools: []
+
+# 数据源配置（双源退避方案: AKShare主源 + baostock备用源）
+data_source:
+  primary: "akshare"           # 主源：akshare / baostock
+  fallback: "baostock"         # 备用源，可与主源相同（仅用单源）
+  retry_times: 3               # 每个源最大重试次数
+  retry_delay: 2               # 初始退避延迟（秒），指数递增
+  prefer_resample: true        # true=强制日K重采样周/月；false=优先原生数据
+  adjust: "qfq"                # 复权：qfq前复权 / hfq后复权 / none不复权
+  rate_limit_akshare: 0.3      # AKShare 请求间隔（秒）
+  timeout: 30                  # 单次请求超时（秒）

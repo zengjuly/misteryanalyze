@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import time
 import logging
 import re
+import threading
 from typing import List, Dict, Optional, Tuple
 
 try:
@@ -14,6 +15,10 @@ try:
 except ImportError:
     BAOSTOCK_AVAILABLE = False
     logging.warning("⚠️ baostock 未安装，将使用模拟数据源")
+
+# baostock 全局单socket连接，多线程并发调用会导致数据包交错/utf-8解码错误
+# 模块级锁：所有 baostock 网络请求必须串行化（线程安全）
+BAOSTOCK_LOCK = threading.Lock()
 
 # pandas 3.0 移除了 DataFrame.append，baostock 旧版本仍在使用
 # 添加兼容层避免 'DataFrame' object has no attribute 'append'
