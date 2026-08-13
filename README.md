@@ -36,6 +36,10 @@ stock_analyzer/
 │   └── config.yaml        # 主配置文件
 ├── data/                  # 数据获取模块
 │   ├── baostock_client.py # baostock数据客户端
+│   ├── akshare_client.py  # AKShare数据源客户端
+│   ├── tdx_local_client.py # 通达信本地数据客户端(mootdx)
+│   ├── kline_resampler.py # 日K→周K/月K聚合器
+│   ├── market_data_client.py # 统一数据入口(三级退避)
 │   ├── data_processor.py  # 数据预处理
 │   ├── db_manager.py      # SQLite本地缓存数据库（三表/联合主键/索引）
 │   ├── data_engine.py     # Cache-Aside数据抽象层（缓存穿透回填）
@@ -213,6 +217,75 @@ python3 run_analysis.py --test
 # ③ 成果查看：output/ 目录报告
 ```
 
+### 多源数据退避（通达信本地 + AKShare + Baostock）
+
+系统采用**三级数据源退避链**：通达信本地数据（主源，离线毫秒级）→ AKShare（网络备用）→ Baostock（最终兜底），
+任一源失败自动切换下一级，不中断分析流程。周K/月K 统一由日K重采样生成，保证多周期对齐。
+
+#### 1. 数据源配置（config/config.yaml）
+
+```yaml
+data_source:
+  primary: "tdx_local"              # 主源：tdx_local(通达信本地) / akshare / baostock
+  fallback: ["akshare", "baostock"] # 备用源列表（依次退避）
+  prefer_resample: true             # true=强制日K重采样周/月
+  adjust: "qfq"                     # 复权：qfq前复权 / hfq后复权 / none不复权
+  retry_times: 3                    # 每个源最大重试次数
+  retry_delay: 2                    # 初始退避延迟（秒），指数递增
+  tdx:
+    vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # 本地数据目录(仓库外)
+    enable: true
+    auto_download: false
+  kline_limit:                      # K线保留条数（循环覆盖控制存储）
+    daily: 2000
+    weekly: 500
+    monthly: 300
+    enable_cleanup: true
+```
+
+#### 2. 通达信本地数据准备
+
+```bash
+# ① 下载官方数据包（hsjday日线/tdxfin财务/tdxgp股票列表），解压至 tdx_vipdoc
+/home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py
+
+# 仅下载日线数据包
+/home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py --pkg hsjday
+
+# 自定义目录（环境变量覆盖，默认 /home/ai/ai_runner/stock/data/tdx_vipdoc）
+TDX_VIPDOC_DIR=/path/to/tdx_vipdoc /home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py
+```
+
+数据目录结构（Git 仓库外，.gitignore 已忽略 *.day/*.zip）：
+```
+tdx_vipdoc/
+├── sh/lday/sh600000.day      # 上海日线
+├── sz/lday/sz000001.day      # 深圳日线
+├── bj/lday/                  # 北交所（若存在）
+└── tdxgp.cfg                 # 股票列表
+```
+
+#### 3. 数据源切换与验证
+
+```bash
+# 验证当前数据源配置生效（打印源顺序）
+/home/ai/ai_runner/venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+import yaml
+from data.market_data_client import MarketDataClient
+config = yaml.safe_load(open('config/config.yaml', encoding='utf-8'))
+mdc = MarketDataClient(config)
+print('源顺序:', mdc.source_order)   # ['tdx_local', 'akshare', 'baostock']
+print('通达信就绪:', mdc.tdx_client.login_success)
+"
+
+# 临时切换主源（如网络环境差时用 baostock）
+# config.yaml: primary: "baostock", fallback: ["akshare"]
+```
+
+> 提示：通达信本地源仅提供日K（周/月K由日K重采样），财务数据由 AKShare/Baostock 兜底获取。
+> 本地数据包需定期重新下载更新（建议每日定时任务）。
+
 ### 输出文件说明
 
 #### Excel报告
@@ -348,9 +421,9 @@ python3 run_analysis.py --test
 
 ## 版本信息
 
-- **版本**: 1.4.0
+- **版本**: 1.6.0
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-12
+- **更新时间**: 2026-08-13
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 许可证

@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.5.0
+- **版本**: 1.6.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-13
 - **文档类型**: 系统设计文档
@@ -77,8 +77,9 @@
 #### 2.2.1 数据模块 (`data/`)
 **职责**: 负责股票数据的获取和预处理
 - `baostock_client.py`: baostock 数据获取客户端（含全局锁 BAOSTOCK_LOCK）
-- `akshare_client.py`: AKShare 数据源客户端（双源退避主源）★
+- `akshare_client.py`: AKShare 数据源客户端（多源退避备用源）★
 - `kline_resampler.py`: 日K→周K/月K 聚合器 ★
+- `tdx_local_client.py`: 通达信本地数据客户端（mootdx，主源 tdx_local）★
 - `market_data_client.py`: 统一数据入口（主备退避 + 重采样选择）★
 - `data_processor.py`: 数据预处理和清洗
 - `db_manager.py`: SQLite 本地缓存数据库（三表/联合主键/索引/safe_upsert）★
@@ -702,6 +703,59 @@ data_source:
 **⑤ 集成方式**：`MysteryDataEngine(db_path, config)` 传入含 `data_source` 段的 config 即启用双源模式；
 不传 config 保持原 baostock 单源逻辑（向后兼容）。
 
+### 4.6 通达信本地数据源（docs/tdx.md）— ★★
+
+**方案概述**：使用 `mootdx` 解析通达信官方数据包（hsjday.zip 解压的 .day 文件），封装为 `TdxLocalClient`
+作为**主数据源（tdx_local）**，形成三级退避链：`tdx_local → akshare → baostock`。
+本地读取毫秒级、离线高可用，网络源兜底。
+
+**① 数据目录**：
+- 默认 `/home/ai/ai_runner/stock/data/tdx_vipdoc`（**Git 仓库外**，避免大体积二进制入库）
+- 环境变量 `TDX_VIPDOC_DIR` 可覆盖（加载优先级：环境变量 > 配置 > 默认绝对路径）
+- 目录结构：`sh/lday/sh600000.day`、`sz/lday/`、`bj/lday/`（北交所）
+- `.gitignore` 已添加 `data/tdx_vipdoc/`、`*.zip`、`*.day`、`*.fin`
+
+**② TdxLocalClient（data/tdx_local_client.py）**：
+- 接口与 BaostockClient/AkshareClient 对齐：login/logout/get_daily_data（兼容周/月接口返回空）
+- 市场判定：`6/9/5→sh`（沪市A股/科创板/ETF）、`0/2/3→sz`（深市/创业板）、`4/8→bj`（北交所）
+- 仅支持日线（.day 文件无换手率→None、涨跌幅 pct_change 重算）；周/月K由上层 `KLineResampler` 重采样
+- 财务数据 mootdx 0.11.7 不支持本地解析 → 返回空由 AKShare/baostock 兜底
+
+**③ MarketDataClient 三级退避**：
+- `fallback` 支持**列表**：`primary + [akshare, baostock]`，`source_order` 自动构建去重
+- `tdx_local` 仅处理 daily，周/月走 prefer_resample 重采样
+- 实测退避链：tdx 空数据 → akshare 网络失败 → baostock 成功（依次降级不中断）
+
+**④ 数据包下载（scripts/download_tdx_packages.py）**：
+```bash
+python scripts/download_tdx_packages.py             # 下载全部(hsjday/tdxfin/tdxgp)
+python scripts/download_tdx_packages.py --pkg hsjday  # 仅日线包
+TDX_VIPDOC_DIR=/path python scripts/download_tdx_packages.py  # 自定义目录
+```
+数据包源：`https://data.tdx.com.cn/vipdoc/`（hsjday 历史日线 / tdxfin 财务 / tdxgp 股票列表）
+
+**⑤ 数据库循环覆盖（kline_limit）**：
+- `db_manager.trim_kline(code, period, max_rows)`：删除旧数据仅保留最新 N 条
+- `upsert_kline(df, code, period, max_rows)` 写入后自动裁剪
+- `data_engine` 从 config 读取 `kline_limit`：日线 2000 / 周线 500 / 月线 300
+- 实测：120 条日K 写入 max_rows=100 → 保留最新 100 条
+
+**⑥ 配置（config/config.yaml data_source 段）**：
+```yaml
+data_source:
+  primary: "tdx_local"              # 主源：tdx_local / akshare / baostock
+  fallback: ["akshare", "baostock"] # 备用源列表（依次退避）
+  tdx:
+    vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # 仓库外，可被TDX_VIPDOC_DIR覆盖
+    enable: true
+    auto_download: false
+  kline_limit:
+    daily: 2000
+    weekly: 500
+    monthly: 300
+    enable_cleanup: true
+```
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
@@ -922,6 +976,7 @@ class ExceptionHandler:
 - 报告自动生成（Excel/HTML/文本/仪表板）+ git 自动同步远端
 - 每日定时任务（周一至五 15:30）自动分析
 - **数据中枢**（SQLite缓存 + Cache-Aside数据引擎 + 全量多线程同步 + 全市场扫描信号捕获）
-- **双源退避**（AKShare主源 + baostock备用源自动切换 + 日K重采样周/月K对齐）
+- **多源退避**（通达信本地主源 + AKShare + baostock 三级退避 + 日K重采样周/月K对齐）
+- **通达信本地数据**（mootdx 解析官方数据包，离线毫秒级读取，K线循环覆盖控制存储）
 
 后续开发人员可以基于此文档进行系统开发、维护和扩展，确保项目的顺利进行和持续发展。
