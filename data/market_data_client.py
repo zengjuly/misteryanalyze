@@ -18,14 +18,20 @@ MarketDataClient - 统一数据入口（主备切换 + 退避）
 """
 
 import logging
+import os
+import sys
 import time
 from typing import Dict, Optional
 
 import pandas as pd
 
-from data.akshare_client import AkshareClient
-from data.baostock_client import BaostockClient, BAOSTOCK_LOCK
-from data.kline_resampler import KLineResampler
+# 确保 data/ 目录在 sys.path（支持 data.market_data_client 与 market_data_client 两种导入方式）
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from akshare_client import AkshareClient
+from baostock_client import BaostockClient, BAOSTOCK_LOCK
+from kline_resampler import KLineResampler
 
 logger = logging.getLogger(__name__)
 
