@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.11.0
+- **版本**: 1.12.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-15
 - **文档类型**: 系统设计文档
@@ -1016,6 +1016,35 @@ data_source:
   （首次建缓存）；每日增量同步（缓存已有）更快
 - 线程策略：主源 tdx_local 本地读取可 8 线程（sync.threads.tdx_local=8）；baostock 兜底
   有全局锁保护（sync.threads.baostock=1）；实测 1/8 线程差异不大（受 SQLite 锁/GIL 限制）
+
+### 4.10 Web 前端界面（docs/ui.md，Streamlit 多页面）— ★★
+
+**技术选型**：Streamlit 1.61 + Plotly 6.9（纯 Python，复用现有分析引擎，无 JS）。
+
+**目录结构**（web/）：
+- `web/app.py`：主入口（侧边栏导航 + 项目说明）
+- `web/pages/1_📈_个股分析.py`：个股深度分析（核心）
+- `web/pages/2_📊_板块监控.py`：板块强度排名 + 成分股
+- `web/pages/3_🔍_全市场扫描.py`：参数化扫描 + 进度条 + 结果表格
+- `web/pages/4_💎_真三振池.py`：扫描结果池 + 自选股管理
+- `web/pages/5_⚙️_系统状态.py`：数据源健康/缓存信息/源健康报告
+- `web/components/`：kline_chart（蜡烛图+均线+成交量副图）/ score_card（st.metric 卡片）/
+  stock_table（真三振高亮 + CSV 导出）
+- `web/utils/session.py`：会话状态 + 后端单例（DataFeeder/MysteryLogic）+ 扫描结果/自选股 JSON 持久化
+
+**后端对接**：
+- `DataFeeder(config)`（传 config 启用多源退避+缓存，否则单源 baostock 慢——已修复）
+  - get_daily（附 MA5-250）/ get_weekly（附 MA60_W）/ get_market_index / get_industry_data
+    （行业分类：多源客户端 → db stock_industry_info 兜底）
+- `MysteryLogic.comprehensive_signal_analysis`（三大心法 + 四维共振综合信号）
+- 个股页输出：评分卡片（综合评分/真三振/主升浪/资金活跃）+ 三大心法状态卡片 +
+  操作建议 + 交互式K线（跳过周末）+ 分析详情 + 最近20日数据 + CSV 导出
+
+**运行**：`streamlit run web/app.py --server.port 1888 --server.headless true`
+（systemd 部署示例见 scripts/mystery-web.service）
+
+**验证**：AppTest 6/6 页面渲染 + 个股分析按钮点击完整链路（8 metric + K线图 +
+"分析完成"提示）；HTTP 200 实测启动成功
 
 ## 5. 接口设计
 

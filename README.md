@@ -69,6 +69,11 @@ stock_analyzer/
 ├── tests/                 # 单元测试(unittest) ★
 │   ├── test_path_utils.py / test_resampler.py / test_incremental.py
 │   └── test_trim_kline.py / test_fallback.py
+├── web/                   # Web 前端（Streamlit 多页面，docs/ui.md）★
+│   ├── app.py             # 主入口（侧边栏导航）
+│   ├── pages/             # 5 个页面（个股分析/板块监控/全市场扫描/真三振池/系统状态）
+│   ├── components/        # K线图/评分卡片/股票表格组件
+│   └── utils/session.py   # 会话状态 + 后端单例
 ├── main.py               # 主执行程序
 ├── test_system.py        # 系统测试
 ├── simple_demo.py        # 简化演示
@@ -500,9 +505,27 @@ print('通达信就绪:', mdc.tdx_client.login_success)
 - `errors.log`: 错误日志
 - `performance.log`: 性能日志
 
+## Web 前端界面（docs/ui.md）
+
+Streamlit 多页面 Web 界面（端口 1888），完全复用现有分析引擎：
+
+```bash
+pip install streamlit plotly
+streamlit run web/app.py --server.port 1888 --server.headless true
+```
+
+页面功能：
+1. **📈 个股分析**：输入代码 → 评分卡片（综合评分/真三振/主升浪/资金活跃）+ 三大心法状态 + 操作建议 + 交互式K线（均线+成交量）+ 分析详情 + 最近20日数据
+2. **📊 板块监控**：行业板块强度排名（成分股近5日平均涨跌幅）+ 板块成分股
+3. **🔍 全市场扫描**：参数化扫描（只看真三振/评分阈值/股票池）+ 进度条 + 结果表格（真三振高亮/CSV导出）
+4. **💎 真三振池**：最近扫描结果 + 自选股管理（JSON 持久化）
+5. **⚙️ 系统状态**：数据源健康（健康分/熔断）+ SQLite 缓存信息 + 源健康报告生成
+
+生产部署：`sudo cp scripts/mystery-web.service /etc/systemd/system/ && sudo systemctl enable --now mystery-web`（防火墙开放 1888 端口）。
+
 ## 版本信息
 
-- **版本**: 1.11.0
+- **版本**: 1.12.0
 - **作者**: Mystery Team
 - **更新时间**: 2026-08-15
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）

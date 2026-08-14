@@ -105,3 +105,28 @@ class DataFeeder:
         if not result:
             logger.warning("⚠️ DataFeeder 指数获取全部失败")
         return result
+
+    def get_industry_data(self) -> Dict:
+        """获取行业分类数据（docs/ui.md §6）
+        :return: {'code_map': {code: 行业名}, 'industry_codes': {行业名: [codes]}}
+                获取失败返回空字典
+        """
+        try:
+            if self.client is not None and hasattr(self.client, 'get_industry_data'):
+                return self.client.get_industry_data()
+        except Exception as e:
+            logger.warning(f"⚠️ DataFeeder.get_industry_data 异常: {str(e)[:80]}")
+        # 兜底: 从 db 行业表读取
+        try:
+            from db_manager import MysteryDB
+            db = MysteryDB()
+            df = db.get_stock_info(limit=None)
+            if df is not None and not df.empty and 'industry' in df.columns:
+                code_map = dict(zip(df['code'], df['industry']))
+                industry_codes = {}
+                for c, ind in code_map.items():
+                    industry_codes.setdefault(ind, []).append(c)
+                return {'code_map': code_map, 'industry_codes': industry_codes}
+        except Exception as e:
+            logger.warning(f"⚠️ DataFeeder 行业数据兜底失败: {str(e)[:80]}")
+        return {}
