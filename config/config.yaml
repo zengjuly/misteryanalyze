@@ -231,6 +231,23 @@ sync:
   batch_size: 50
   checkpoint_file: "data/sync_checkpoint.json"  # 断点续传文件（中断后跳过已完成）
 
+# 核心分析模块配置（docs/refact1.md §7 三大心法参数）
+analysis:
+  ma_params:
+    short: [5, 10, 20, 60]   # 日线短中期均线
+    long: 250                # 年线滤网
+    weekly_long: 60          # 周线锚定（60周线）
+  break_five:
+    recover_days: 2          # 破五反五: 2个交易日内收回
+    ma20_slope_lookback: 3   # MA20 斜率对比窗口（日）
+  resonance:
+    score_threshold: 85      # 真三振阈值
+    position_penalty: 15     # 大盘高位惩罚
+  position:
+    first_entry_pct: 0.1     # 首次建仓仓位比例
+    add_position_pct: 0.2    # 加仓比例
+    max_total_pct: 0.3       # 最大总仓位比例
+
 # 开发调试配置
 debug:
   # 调试模式

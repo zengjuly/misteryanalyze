@@ -79,6 +79,16 @@ class MysteryLogic:
                     errors.append("均线未呈现多头顺次排列")
                     passed = False
             
+            # 4. 年线滤网（docs/refact1.md 心法①）: MA5/MA10/MA20/MA60 全部运行在 MA250 年线之上
+            # （股价站上年线 ≠ 均线体系站稳年线；空头环境下均线在年线下方即使股价反弹也视为弱）
+            if pd.notna(latest_data.get('MA250')):
+                for w in ['MA5', 'MA10', 'MA20', 'MA60']:
+                    v = latest_data.get(w)
+                    if pd.notna(v) and v <= latest_data['MA250']:
+                        errors.append(f"{w}未运行在年线(MA250)上方")
+                        passed = False
+                        break
+            
             self.logger.info(f"{'✅' if passed else '❌'} 基础过滤 {'通过' if passed else '失败'}: {len(errors)} 个错误")
             return passed, errors
             
@@ -213,6 +223,205 @@ class MysteryLogic:
             return {'三级共振': False, '共振评分': 0, '共振级别': '异常',
                     '真三振': False, '详情': [f"分析异常: {e}"]}
     
+    def weekly_anchor_check(self, weekly_df: Optional[pd.DataFrame],
+                            lookback: int = 60) -> Dict[str, Any]:
+        """周线方向锚定（docs/refact1.md 心法②）:
+        周线收盘稳定在 60 周均线之上，且 60 周均线斜率不向下（允许走平）
+        :param weekly_df: 周K DataFrame（含 收盘价）
+        :return: {锚定, 原因, 收盘价, MA60_W, 斜率}
+        """
+        try:
+            result = {'锚定': False, '原因': '周线数据不足', '收盘价': None,
+                      'MA60_W': None, '斜率': 0.0}
+            if weekly_df is None or weekly_df.empty or len(weekly_df) < 10:
+                return result
+            df = weekly_df.copy()
+            close_col = '收盘价' if '收盘价' in df.columns else 'close'
+            if close_col not in df.columns:
+                return result
+            # 计算60周均线（数据不足60周时用可用数据的最小窗口）
+            win = min(lookback, len(df))
+            df['MA60_W'] = df[close_col].rolling(win).mean()
+            latest = df.iloc[-1]
+            ma60 = latest['MA60_W']
+            if pd.isna(ma60):
+                result['原因'] = '60周均线数据不足'
+                return result
+            above = float(latest[close_col]) > float(ma60)
+            # 斜率: 最新MA60_W vs 3周前（允许走平）
+            slope = 0.0
+            if len(df) >= 4 and pd.notna(df['MA60_W'].iloc[-4]):
+                slope = float(ma60) - float(df['MA60_W'].iloc[-4])
+            slope_ok = slope >= -1e-9
+            anchored = above and slope_ok
+            result.update({
+                '锚定': anchored,
+                '收盘价': round(float(latest[close_col]), 3),
+                'MA60_W': round(float(ma60), 3),
+                '斜率': round(slope, 3),
+                '原因': (f"周线{float(latest[close_col]):.2f} > "
+                        f"60周线{float(ma60):.2f}"
+                        f"（斜率{slope:+.3f}）" if anchored else
+                        "周线跌破60周线或60周均线拐头向下"),
+            })
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ 周线锚定分析异常: {e}")
+            return {'锚定': False, '原因': f"分析异常: {e}", 'MA60_W': None,
+                    '斜率': 0.0}
+
+    def check_po5_fan5(self, df: pd.DataFrame, lookback: int = 5) -> Dict[str, Any]:
+        """破五反五容错（docs/refact1.md 心法③）:
+        允许跌破 MA5，但 2 个交易日内收回且 MA20 斜率向上
+        :param df: 日K DataFrame（含 收盘价/MA5/MA20）
+        :return: {破五反五, 破五天数, MA20斜率, 原因}
+        """
+        try:
+            result = {'破五反五': False, '破五天数': None, 'MA20斜率': None,
+                      '原因': '数据不足'}
+            if df is None or df.empty or len(df) < 5:
+                return result
+            d = df.copy()
+            close_col = '收盘价' if '收盘价' in d.columns else 'close'
+            if close_col not in d.columns:
+                return result
+            if 'MA5' not in d.columns:
+                d['MA5'] = d[close_col].rolling(5).mean()
+            if 'MA20' not in d.columns:
+                d['MA20'] = d[close_col].rolling(20).mean()
+            # 近 lookback 日是否曾跌破 MA5
+            recent = d.iloc[-lookback:]
+            broke_mask = recent[close_col] < recent['MA5']
+            if not broke_mask.any():
+                return {**result, '原因': '未破五（股价始终在MA5上方）'}
+            last_broke_idx = recent.index[broke_mask][-1]
+            latest = d.iloc[-1]
+            if float(latest[close_col]) <= float(latest['MA5']):
+                return {**result, '原因': '仍处破五状态（未收回MA5）'}
+            # 收回天数
+            days_since_break = len(d.loc[last_broke_idx:]) - 1
+            # MA20 斜率（最新 vs 3日前）
+            ma20_slope = None
+            if len(d) >= 3 and pd.notna(d['MA20'].iloc[-1]) \
+                    and pd.notna(d['MA20'].iloc[-3]):
+                ma20_slope = float(d['MA20'].iloc[-1]) - float(d['MA20'].iloc[-3])
+            slope_up = ma20_slope is not None and ma20_slope > 0
+            valid = days_since_break <= 2 and slope_up
+            return {
+                '破五反五': valid,
+                '破五天数': int(days_since_break),
+                'MA20斜率': round(ma20_slope, 3) if ma20_slope is not None else None,
+                '原因': (f"破五后{int(days_since_break)}日内收回且MA20向上"
+                        f"（斜率{ma20_slope:+.3f}）" if valid else
+                        f"破五后{int(days_since_break)}日收回但MA20未向上"
+                        f"（斜率{ma20_slope:+.3f}）"),
+            }
+        except Exception as e:
+            self.logger.error(f"❌ 破五反五分析异常: {e}")
+            return {**result, '原因': f"分析异常: {e}"}
+
+    def main_bull_wave_signal(self, data: pd.DataFrame,
+                              weekly_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        """主升浪信号（docs/refact1.md 三大心法整合）:
+        年线滤网 ∧ 周线锚定 ∧ (股价>MA5 ∨ 破五反五)
+        :return: {主升浪信号, 年线滤网, 周线锚定, 破五反五, 详情}
+        """
+        try:
+            # 心法① 年线滤网（复用 basic_filter 一票否决）
+            basic_passed, basic_errors = self.basic_filter(data)
+            # 心法② 周线锚定
+            weekly = (self.weekly_anchor_check(weekly_df)
+                      if weekly_df is not None
+                      else {'锚定': True, '原因': '无周线数据（跳过周线锚定）'})
+            # 心法③ 破五反五
+            po5 = self.check_po5_fan5(data)
+            # 股价在 MA5 上方（未破五的直接持股条件）
+            price_above_ma5 = False
+            if '收盘价' in data.columns and 'MA5' in data.columns \
+                    and len(data) > 0:
+                price_above_ma5 = bool(
+                    data.iloc[-1]['收盘价'] > data.iloc[-1]['MA5'])
+            is_main = basic_passed and weekly['锚定'] \
+                and (price_above_ma5 or po5['破五反五'])
+            return {
+                '主升浪信号': bool(is_main),
+                '年线滤网': bool(basic_passed),
+                '周线锚定': bool(weekly['锚定']),
+                '破五反五': bool(po5['破五反五']),
+                '详情': [*basic_errors[:3], weekly['原因'], po5['原因']],
+                '依据': {
+                    '年线滤网': basic_errors if not basic_passed else ['年线多头滤网通过'],
+                    '周线': weekly,
+                    '破五反五': po5,
+                },
+            }
+        except Exception as e:
+            self.logger.error(f"❌ 主升浪信号分析异常: {e}")
+            return {'主升浪信号': False, '年线滤网': False, '周线锚定': False,
+                    '破五反五': False, '详情': [f"分析异常: {e}"]}
+
+    def comprehensive_signal_analysis(self, data: pd.DataFrame,
+                                      weekly_data: Optional[pd.DataFrame] = None,
+                                      market_data: Dict = None,
+                                      industry_data: Dict = None,
+                                      industry_trend: bool = None) -> Dict[str, Any]:
+        """综合信号分析（docs/refact1.md §4.2）:
+        综合评分 = 共振评分×0.6 + 主升浪信号×40×0.4；未通过年线滤网直接观望
+        注意: 与旧版 comprehensive_analysis（main.py 沿用）并存，本方法为
+        refact1 三大心法整合版，返回 操作建议/三大心法状态/共振明细。
+        :param data: 日K（含指标列）
+        :param weekly_data: 周K（可选，周线锚定）
+        :param market_data: {指数名: DataFrame}（可选）
+        :param industry_data: {行业名: DataFrame}（可选）
+        :param industry_trend: 行业趋势 bool（industry_data 为空时使用）
+        :return: 综合信号字典（含综合评分/操作建议/三大心法状态/共振明细）
+        """
+        try:
+            # 年线滤网一票否决
+            basic = self.basic_filter(data)
+            if not basic[0]:
+                return {
+                    '综合评分': 0.0, '操作建议': '观望（未通过年线滤网）',
+                    '主升浪信号': False, '真三振': False, '年线滤网': False,
+                    '周线锚定': False, '破五反五': False, '共振评分': 0.0,
+                    '共振级别': '无共振', '详情': [f"年线滤网未通过: {basic[1][:3]}"],
+                }
+            # 主升浪信号（三大心法）
+            main_wave = self.main_bull_wave_signal(data, weekly_data)
+            # 四维共振（3z.md）
+            resonance = self.three_resonance_analysis(
+                data, market_data, industry_trend, industry_data=industry_data)
+            # 综合评分 = 共振评分×0.6 + 主升浪40×0.4
+            r_score = float(resonance.get('共振评分', 0) or 0)
+            score = r_score * 0.6 + (40 if main_wave['主升浪信号'] else 0) * 0.4
+            # 操作建议
+            if resonance.get('真三振') and main_wave['主升浪信号']:
+                advice = '强烈关注（真三振 + 主升浪）'
+            elif resonance.get('真三振'):
+                advice = '重点关注（真三振）'
+            elif main_wave['主升浪信号']:
+                advice = '可关注（主升浪持股期）'
+            else:
+                advice = resonance.get('共振建议', '观望为主')
+            return {
+                '综合评分': round(score, 1),
+                '操作建议': advice,
+                '主升浪信号': main_wave['主升浪信号'],
+                '年线滤网': main_wave['年线滤网'],
+                '周线锚定': main_wave['周线锚定'],
+                '破五反五': main_wave['破五反五'],
+                '真三振': resonance.get('真三振', False),
+                '共振评分': r_score,
+                '共振级别': resonance.get('共振级别', '无共振'),
+                '资金活跃': resonance.get('资金活跃', False),
+                '最强板块': resonance.get('最强板块', []),
+                '详情': main_wave['详情'] + resonance.get('详情', []),
+            }
+        except Exception as e:
+            self.logger.error(f"❌ 综合信号分析异常: {e}")
+            return {'综合评分': 0.0, '操作建议': '分析异常', '主升浪信号': False,
+                    '真三振': False, '详情': [f"分析异常: {e}"]}
+
     def main_bull_wave_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
         """
         强势主升浪/空中加油逻辑

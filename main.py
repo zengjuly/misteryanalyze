@@ -671,6 +671,18 @@ class StockAnalysisSystem:
                 # 主升浪分析
                 bull_wave_analysis = self.mystery_logic.main_bull_wave_analysis(indicators)
                 
+                # 三大心法综合信号（docs/refact1.md）: 年线滤网+周线锚定+破五反五
+                # + 四维共振 → 综合评分/操作建议
+                weekly_df = None
+                stock_pd = processed_data.get(stock_code, {})
+                if isinstance(stock_pd, dict):
+                    weekly_df = stock_pd.get('weekly')
+                signal_analysis = self.mystery_logic.comprehensive_signal_analysis(
+                    indicators, weekly_data=weekly_df,
+                    market_data=market_data,
+                    industry_data=stock_industry_data,
+                    industry_trend=industry_trend)
+                
                 # 主升浪8项指标对比表
                 bull_wave_checklist = self.mystery_logic.main_bull_wave_checklist(
                     indicators, industry_trend)
@@ -724,6 +736,14 @@ class StockAnalysisSystem:
                     '大盘趋势': resonance_analysis.get('大盘趋势', False),
                     '主升浪状态': bull_wave_analysis.get('主升浪状态', '未知'),
                     '主升浪判定依据': bull_wave_analysis.get('判定依据', []),
+                    # 三大心法综合信号（docs/refact1.md）
+                    '核心信号': signal_analysis.get('综合评分', 0),
+                    '操作建议': signal_analysis.get('操作建议', '观望'),
+                    '年线滤网': signal_analysis.get('年线滤网', False),
+                    '周线锚定': signal_analysis.get('周线锚定', False),
+                    '破五反五': signal_analysis.get('破五反五', False),
+                    '主升浪信号': signal_analysis.get('主升浪信号', False),
+                    '综合信号详情': signal_analysis.get('详情', []),
                     '主升浪详情': bull_wave_analysis.get('详情', []),
                     '平台状态': platform_breakthrough.get('平台状态', '未知'),
                     '平台范围': platform_breakthrough.get('平台范围'),
@@ -930,6 +950,12 @@ class StockAnalysisSystem:
                 print(f"🔗 多周期共振: {'✅' if analysis.get('多周期共振', False) else '❌'}")
                 
                 print(f"🚀 主升浪状态: {analysis.get('主升浪状态', '未知')}")
+                print(f"   🧭 三大心法信号: 年线滤网{'✅' if analysis.get('年线滤网') else '❌'} "
+                      f"周线锚定{'✅' if analysis.get('周线锚定') else '❌'} "
+                      f"破五反五{'✅' if analysis.get('破五反五') else '❌'} "
+                      f"→ 主升浪信号{'✅' if analysis.get('主升浪信号') else '❌'}")
+                print(f"   🎯 核心信号: {analysis.get('核心信号', 0)}分 "
+                      f"| 操作建议: {analysis.get('操作建议', '观望')}")
                 for basis in analysis.get('主升浪判定依据', []) or []:
                     print(f"   ↳ {basis}")
                 print(f"💪 平台状态: {analysis.get('平台状态', '未知')}")

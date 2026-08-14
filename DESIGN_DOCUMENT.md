@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.10.0
+- **版本**: 1.11.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-14
+- **更新日期**: 2026-08-15
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -576,6 +576,40 @@ class ExceptionHandler:
 - 总分封顶 100
 - 建议：≥80 "强烈买入"；≥60 "买入"；≥40 "关注"；否则"观望"
 - 止损位：`MA20 × 0.95`（MA20 的 95%）
+
+### 3.11.1 三大心法综合信号（comprehensive_signal_analysis）— ★★（docs/refact1.md）
+
+严格量化《Mistery趋势交易论》三大心法，与四维共振闭环输出可操作信号：
+
+**心法① 日线多头基础滤网（basic_filter 增强）**：
+- 原有：收盘 > MA250、收盘 > MA60、均线多头排列（MA5>MA10>MA20>MA60）
+- **新增**：MA5/MA10/MA20/MA60 **全部运行在 MA250 年线之上**
+  （股价站上年线 ≠ 均线体系站稳年线；空头环境下均线在年线下方即使股价反弹也视为弱）
+
+**心法② 周线方向锚定（weekly_anchor_check）**：
+- 周线收盘 > 60 周均线（MA60_W），且 MA60_W 斜率不向下（允许走平，3周对比窗口）
+- 数据不足 60 周时用可用窗口；无周线数据跳过（视为锚定）
+
+**心法③ 破五反五容错（check_po5_fan5）**：
+- 允许跌破 MA5：近5日内曾破五 → 收回且 2 个交易日内收回 + MA20 斜率向上（3日窗口）
+- 返回：破五反五/破五天数/MA20斜率/原因
+
+**主升浪信号（main_bull_wave_signal）**：`年线滤网 ∧ 周线锚定 ∧ (股价>MA5 ∨ 破五反五)`
+
+**综合评分（comprehensive_signal_analysis）**：
+- 未通过年线滤网 → 综合评分 0，操作建议"观望（未通过年线滤网）"
+- 通过后：`综合评分 = 共振评分×0.6 + 主升浪信号40×0.4`
+- 建议：真三振+主升浪 → "强烈关注"；真三振 → "重点关注"；主升浪 → "可关注（主升浪持股期）"；否则用共振建议
+
+**数据适配（utils/data_feeder.py 新增）**：DataFeeder 统一接口（get_daily 附 MA5-250 /
+get_weekly 附 MA60_W / get_market_index），可独立用于扫描脚本。
+
+**配置（config.yaml analysis 段）**：ma_params / break_five（recover_days=2, ma20_slope_lookback=3）/
+resonance（score_threshold=85, position_penalty=15）/ position（仓位管理参数）
+
+**集成**：main.py `_perform_mystery_analysis` 调用 comprehensive_signal_analysis
+（weekly_data 取 processed_data 周K），新增字段：核心信号/操作建议/年线滤网/周线锚定/
+破五反五/主升浪信号/综合信号详情（不影响旧版 comprehensive_analysis 及报告字段）
 
 ---
 
