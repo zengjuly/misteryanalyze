@@ -256,6 +256,16 @@ data_source:
     enable: true               # 是否启用本地源
     auto_download: false       # 是否自动触发下载（建议手动/定时）
     gbbq_file: "/home/ai/ai_runner/stock/data/tdx_vipdoc/cw/gbbq"  # 除权除息文件(可选，无则增量走连续性检查)
+    server_host: "119.147.212.81"  # 通达信行情服务器（协议增量补充，本地无数据时）
+    server_port: 7709
+
+  # 源健康评分与动态熔断（docs/step2.md 阶段2优化）
+  health:
+    enable: true               # 是否启用健康评分
+    window_size: 10            # 滑动窗口大小（记录最近N次请求）
+    fail_threshold: 3          # 连续失败熔断阈值
+    recover_seconds: 300       # 熔断恢复时间（秒）
+    sort_by_health: false      # true=按健康分动态排序源；false=保持preferred顺序仅剔除熔断源
 
   # 增量更新（docs/step1.md 阶段1优化）：本地.day文件尾部读取，零网络
   incremental:

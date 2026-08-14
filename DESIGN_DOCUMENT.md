@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.7.0
+- **版本**: 1.8.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-14
 - **文档类型**: 系统设计文档
@@ -820,6 +820,69 @@ data_source:
   产生 12345 个扁平文件，mootdx/TdxLocalClient 目录结构读取失效（tdx_local 主源从未真正命中）
 - 修复：`_safe_extract()` 反斜杠→正斜杠按目录解压 + zip slip 防护；`fix_flat_structure()` 幂等修复遗留扁平结构
 - 用法：`python scripts/download_tdx_packages.py --fix-flat`（修复遗留文件，无需重新下载）
+
+### 4.8 协议增强与源健康熔断（docs/step2.md 阶段2优化）— ★★
+
+**方案概述**：基于 step2.md 实施指南，实现**通达信行情协议客户端**（本地数据缺失时协议增量补充）
+与**源健康评分与动态熔断**（SourceHealth 模块，自动屏蔽故障源、恢复后自动放回）。
+
+**① 源健康评分（data/source_health.py，新增）**：
+- 核心字段：success_count / failure_count / consecutive_failures / last_failure_time /
+  window(滑动窗口 maxlen=window_size) / health_score / is_open / avg_latency_ms
+- `record(source, success, latency_ms)`：每次请求后记录；健康分 = 滑动窗口成功率×100
+- **熔断**：`consecutive_failures >= fail_threshold(3)` → is_open=False，告警熔断
+- **恢复**：超过 `recover_seconds(300)` 后自动重置熔断状态，允许试探请求
+- `get_ordered_sources(preferred)`：剔除熔断源；`sort_by_health=true` 时按健康分降序动态排序
+- **空数据记成功**（step2.md 明确）：停牌股/无数据范围不触发误熔断
+- 配置（config.yaml data_source.health）：enable / window_size / fail_threshold /
+  recover_seconds / sort_by_health
+
+**② 协议客户端（data/tdx_protocol_client.py，新增）**：
+- 从通达信行情服务器（TCP 7709）实时获取日K，用于本地 .day 缺失时增量补充
+- 自动降级链：`easy_tdx`（UnifiedTdxClient）→ `mootdx Quotes`（Quotes.factory）→ 无客户端（仅本地）
+- `fetch_daily(code, start_date, end_date, adjust)` 输出标准中文列名（与 TdxLocalClient 对齐）
+- 协议数据为不复权原始价，复权由上层处理
+- 本机环境：easy_tdx 未安装（pip sha256 校验失败）→ 自动降级 mootdx Quotes；
+  行情服务器 119.147.212.81:7709 不可达（网络限制）→ 协议补充为空，退避链兜底
+
+**③ MarketDataClient 健康集成**：
+- `__init__` 注入 `SourceHealth(config)`；`TdxLocalClient` 传入 config（含协议客户端）
+- `_fetch_with_fallback`：源列表先经 `get_ordered_sources` 健康过滤（熔断剔除），
+  每次请求计时 → `record(成功/失败, latency_ms)`；日志含耗时（ms）
+- 成功（非空）→ 记成功；空数据 → 记成功（避免误熔断）；异常 → 记失败（连续失败触发熔断）
+- 与 step1 增量路径共存：增量优先（零网络），增量不可用时退避链带健康熔断
+
+**④ TdxLocalClient 协议补充**：
+- `__init__(vipdoc_dir, enable, config)`：config 非空时创建 `TdxProtocolClient`
+- `get_daily_data`：本地读取失败/无数据 → `_fetch_protocol`（需 start_date/end_date）
+  从行情服务器补充，返回标准中文列名
+
+**⑤ 配置（config/config.yaml data_source 段新增）**：
+```yaml
+data_source:
+  health:
+    enable: true
+    window_size: 10
+    fail_threshold: 3
+    recover_seconds: 300
+    sort_by_health: false
+  tdx:
+    server_host: "119.147.212.81"   # 通达信行情服务器
+    server_port: 7709
+```
+
+**⑥ 依赖**：requirements.txt 新增可选 `easy_tdx`（注释掉，未安装时自动降级 mootdx Quotes）
+
+**⑦ 集成修复（step2 实现中暴露的问题）**：
+- **重采样日历过滤修复**（kline_resampler.py）：交易日历来自缓存日K并集，可能**落后于增量数据**
+  （缓存 08-13 vs .day 增量 08-14）→ 原逻辑会误删最新交易日 → 周/月K最新收盘错误（33.78≠33.42）。
+  修复：保留"日历中日期 ∪ 日历最大日期之后的日期"，仅剔除日历范围内非交易日
+- **keep 索引对齐**（kline_resampler.py）：`resampled[keep]` 在 dropna 后索引错位产生
+  UserWarning → `keep.reindex(resampled.index, fill_value=False)` 对齐
+- **增量行换手率缺失**（market_data_client.py）：.day 文件无换手率 → 增量合并后最新行换手率 None →
+  分析打印/HTML 生成崩溃（NoneType.format）。修复：合并后 `换手率.ffill()`（用缓存最近值近似）；
+  main.py 技术指标打印 + html_generator `_val` 加 `or 0` 防御
+- 实测：修复后 600150 完整单股分析无异常（最新价 33.42/换手率 0.87% 近似值/周月线 33.42）
 
 ## 5. 接口设计
 

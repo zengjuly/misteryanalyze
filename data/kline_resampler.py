@@ -108,8 +108,14 @@ class KLineResampler:
         df = df.sort_values("日期").drop_duplicates(subset=["日期"], keep="last")
 
         # 1.5 交易日历过滤（仅保留交易日）
-        if self.use_trading_calendar and self._calendar is not None:
-            df = df[df["日期"].dt.normalize().isin(self._calendar)]
+        # 注意: 日历来自缓存日K日期并集，可能落后于最新数据（如增量合并带来的最新交易日）。
+        # 因此保留"日历中的日期" ∪ "日历最大日期之后的日期"（最新交易日/增量数据），
+        # 只剔除日历范围内的非交易日（周末/节假日）。
+        if self.use_trading_calendar and self._calendar is not None \
+                and len(self._calendar) > 0:
+            cal_max = self._calendar.max()
+            dates = df["日期"].dt.normalize()
+            df = df[dates.isin(self._calendar) | (dates > cal_max)]
 
         df = df.set_index("日期")
 
@@ -127,6 +133,8 @@ class KLineResampler:
         # 3.5 最少K线数过滤（剔除不完整周期；最新周期豁免）
         if min_bars and min_bars > 0:
             keep = counts >= min_bars
+            # 与 resampled 索引对齐（dropna 后索引可能不同，避免 reindex 错位）
+            keep = keep.reindex(resampled.index, fill_value=False)
             if self.keep_latest_period and len(keep) > 0:
                 keep.iloc[-1] = True  # 进行中的最新周期必须保留
             resampled = resampled[keep]

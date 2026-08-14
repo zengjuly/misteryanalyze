@@ -879,10 +879,19 @@ class StockAnalysisSystem:
                 print(f"📊 满足 {analysis.get('主升浪满足数量', 0)}/8 项, 综合判断: {analysis.get('主升浪综合判断', '未知')}")
                 
                 print("\n📈 技术指标（最新交易日）:")
-                print(f"💰 最新价: {analysis.get('最新价', 0):.2f}  换手率: {analysis.get('换手率', 0):.2f}%  量比: {analysis.get('量比', 0):.2f}")
-                print(f"📊 MA5: {analysis.get('MA5', 0):.2f}  MA10: {analysis.get('MA10', 0):.2f}  MA20: {analysis.get('MA20', 0):.2f}  MA60: {analysis.get('MA60', 0):.2f}  MA250: {analysis.get('MA250', 0):.2f}")
-                print(f"📈 RSI: {analysis.get('RSI', 0):.2f}  MACD: {analysis.get('MACD', 0):.2f}  信号: {analysis.get('MACD_信号', '未知')}")
-                print(f"⚡ 动能状态: {analysis.get('动能状态', '未知')}  量价配合度: {analysis.get('量价配合度', 0):.2f}")
+                print(f"💰 最新价: {analysis.get('最新价') or 0:.2f}  "
+                      f"换手率: {analysis.get('换手率') or 0:.2f}%  "
+                      f"量比: {analysis.get('量比') or 0:.2f}")
+                print(f"📊 MA5: {analysis.get('MA5') or 0:.2f}  "
+                      f"MA10: {analysis.get('MA10') or 0:.2f}  "
+                      f"MA20: {analysis.get('MA20') or 0:.2f}  "
+                      f"MA60: {analysis.get('MA60') or 0:.2f}  "
+                      f"MA250: {analysis.get('MA250') or 0:.2f}")
+                print(f"📈 RSI: {analysis.get('RSI') or 0:.2f}  "
+                      f"MACD: {analysis.get('MACD') or 0:.2f}  "
+                      f"信号: {analysis.get('MACD_信号', '未知')}")
+                print(f"⚡ 动能状态: {analysis.get('动能状态', '未知')}  "
+                      f"量价配合度: {analysis.get('量价配合度') or 0:.2f}")
                 
                 print("\n💹 财务指标:")
                 print(f"🏦 ROE: {analysis.get('ROE', '-')}  EPS: {analysis.get('EPS', '-')}  PE: {analysis.get('PE', '-')}  PB: {analysis.get('PB', '-')}  股息率: {analysis.get('股息率', '-')}%  (报告期: {analysis.get('财务报告期', '-')})")

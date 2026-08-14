@@ -37,9 +37,10 @@ STANDARD_COLS = ["日期", "代码", "开盘价", "最高价", "最低价",
 
 
 class TdxLocalClient:
-    """通达信本地数据客户端（mootdx 读取 .day 文件）"""
+    """通达信本地数据客户端（mootdx 读取 .day 文件 + 协议增量补充）"""
 
-    def __init__(self, vipdoc_dir: str = None, enable: bool = True):
+    def __init__(self, vipdoc_dir: str = None, enable: bool = True,
+                 config: dict = None):
         # 优先级: 环境变量 > 配置 > 默认绝对路径（仓库外）
         self.vipdoc_dir = (os.getenv("TDX_VIPDOC_DIR")
                            or vipdoc_dir
@@ -47,13 +48,29 @@ class TdxLocalClient:
         self.enable = enable and MOOTDX_AVAILABLE
         self.reader = None
         self.login_success = False
+        # 协议客户端（本地无数据时从行情服务器补充，docs/step2.md）
+        self.protocol_client = None
+        if config is not None:
+            try:
+                from tdx_protocol_client import TdxProtocolClient
+                self.protocol_client = TdxProtocolClient(config)
+            except Exception as e:
+                logger.warning(f"⚠️ 协议客户端初始化失败({str(e)[:80]})")
+        # 本地 .day 读取器（自研 struct 解析，docs/step1.md TdxIncremental）
+        # 说明: mootdx Reader 期望 {tdxdir}/vipdoc/{market}/lday/ 结构（多一层vipdoc），
+        # 与本项目 tdx_vipdoc/{market}/lday/ 不匹配导致 reader.daily 恒为空；
+        # 因此实际 .day 读取统一走 TdxIncremental（兼容标准/扁平两种目录结构）。
+        from tdx_incremental import TdxIncremental
+        self.incremental_reader = TdxIncremental(vipdoc_dir=self.vipdoc_dir)
         if self.enable:
             try:
                 # 目录不存在时自动创建（数据包下载脚本会写入）
                 os.makedirs(self.vipdoc_dir, exist_ok=True)
                 self.reader = Reader.factory(market='std', tdxdir=self.vipdoc_dir)
                 self.login_success = True
-                logger.info(f"📂 通达信本地数据源就绪: {self.vipdoc_dir}")
+                logger.info(f"📂 通达信本地数据源就绪: {self.vipdoc_dir}"
+                            + ("（含协议补充）" if self.protocol_client
+                               and self.protocol_client.available else ""))
             except Exception as e:
                 logger.warning(f"⚠️ 通达信本地数据源初始化失败({e})，"
                                f"将由备用源兜底")
@@ -91,66 +108,48 @@ class TdxLocalClient:
     def get_daily_data(self, stock_code: str, start_date: str = None,
                        end_date: str = None, adjust: str = "qfq") -> pd.DataFrame:
         """
-        读取本地日K线数据（.day 文件）
+        读取本地日K线数据（.day 文件，自研 struct 解析）
+        本地无数据/数据不足时，自动用协议客户端从行情服务器补充（docs/step2.md）
         返回标准中文列名 DataFrame，与 AKShare/Baostock 一致
         """
-        if not self.login_success or self.reader is None:
-            return pd.DataFrame(columns=STANDARD_COLS)
-
         code = self.normalize_stock_code(stock_code)
-        market = self._get_market(code)
 
-        try:
-            df = self.reader.daily(symbol=code)
-        except Exception as e:
-            logger.error(f"❌ mootdx 读取 {code} 日线失败: {e}")
-            return pd.DataFrame(columns=STANDARD_COLS)
+        # 本地读取（TdxIncremental 兼容标准/扁平目录结构）
+        df = self.incremental_reader._read_day_file_tail(code, None)
 
         if df is None or df.empty:
-            return pd.DataFrame(columns=STANDARD_COLS)
+            # 本地无数据 → 协议补充
+            return self._fetch_protocol(stock_code, start_date, end_date)
 
-        # mootdx 列名: date/open/high/low/close/volume/amount → 中文
-        rename_map = {
-            'date': '日期', 'open': '开盘价', 'high': '最高价',
-            'low': '最低价', 'close': '收盘价', 'volume': '成交量',
-            'amount': '成交额',
-        }
-        df = df.rename(columns=rename_map)
-        df['代码'] = code
-
-        # 日期标准化
+        # 日期过滤 + 排序
         if '日期' in df.columns:
-            df['日期'] = pd.to_datetime(df['日期']).dt.strftime('%Y-%m-%d')
-
-        # 数值类型转换
-        for col in ['开盘价', '最高价', '最低价', '收盘价', '成交量', '成交额']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        # 过滤无效行
-        if '开盘价' in df.columns and '收盘价' in df.columns:
-            df = df.dropna(subset=['开盘价', '收盘价'])
-
-        # 按日期过滤 + 排序
-        if '日期' in df.columns:
+            df['日期'] = df['日期'].dt.strftime('%Y-%m-%d')
             if start_date:
                 df = df[df['日期'] >= str(start_date)]
             if end_date:
                 df = df[df['日期'] <= str(end_date)]
             df = df.sort_values('日期')
 
-        # 涨跌幅（缺失时计算）
-        if '涨跌幅' not in df.columns:
-            df['涨跌幅'] = df['收盘价'].pct_change() * 100
-        # 换手率（本地.day文件无换手率，置None）
-        if '换手率' not in df.columns:
-            df['换手率'] = None
-
         # 标准列输出
         for col in STANDARD_COLS:
             if col not in df.columns:
                 df[col] = None
         return df[STANDARD_COLS].copy()
+
+    def _fetch_protocol(self, stock_code: str, start_date: str = None,
+                        end_date: str = None) -> pd.DataFrame:
+        """本地无数据时，用协议客户端从行情服务器获取（协议增量）"""
+        if self.protocol_client is None or not self.protocol_client.available:
+            return pd.DataFrame(columns=STANDARD_COLS)
+        if not start_date or not end_date:
+            logger.debug("协议补充需提供 start_date/end_date，跳过")
+            return pd.DataFrame(columns=STANDARD_COLS)
+        df = self.protocol_client.fetch_daily(
+            stock_code, start_date, end_date)
+        if not df.empty:
+            logger.info(f"📡 [{stock_code}] 本地无数据，协议补充 "
+                        f"{len(df)} 条（{start_date}~{end_date}）")
+        return df
 
     # 兼容其他周期接口（tdx本地仅日线，周/月由上层重采样）
     def get_weekly_data(self, stock_code: str, start_date: str = None,

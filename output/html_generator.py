@@ -405,7 +405,8 @@ class HTMLGenerator:
                 if key in result and result[key] not in (None, ''):
                     return result[key]
                 if latest is not None:
-                    return latest.get(fallback_key or key, 0)
+                    v = latest.get(fallback_key or key, 0)
+                    return v if v is not None else 0
                 return 0
             
             metrics = {

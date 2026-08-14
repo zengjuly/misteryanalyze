@@ -40,6 +40,8 @@ stock_analyzer/
 │   ├── tdx_local_client.py # 通达信本地数据客户端(mootdx)
 │   ├── tdx_incremental.py # 通达信增量更新器(.day尾部读取,零网络) ★
 │   ├── tdx_gbbq.py        # 除权除息(gbbq)解析与复权因子计算 ★
+│   ├── tdx_protocol_client.py # 通达信行情协议客户端(本地缺失时增量补充) ★
+│   ├── source_health.py   # 源健康评分与动态熔断(故障源自动屏蔽) ★
 │   ├── kline_resampler.py # 日K→周K/月K聚合器(交易日历感知+最少K线过滤) ★
 │   ├── market_data_client.py # 统一数据入口(三级退避)
 │   ├── data_processor.py  # 数据预处理
@@ -239,6 +241,14 @@ data_source:
     enable: true
     auto_download: false
     gbbq_file: "/home/ai/ai_runner/stock/data/tdx_vipdoc/cw/gbbq"  # 除权文件(可选)
+    server_host: "119.147.212.81"  # 通达信行情服务器（协议增量补充）
+    server_port: 7709
+  health:                          # 源健康评分与动态熔断（step2.md）
+    enable: true                   # 故障源自动屏蔽、恢复后放回
+    window_size: 10                # 滑动窗口大小
+    fail_threshold: 3              # 连续失败熔断阈值
+    recover_seconds: 300           # 熔断恢复时间（秒）
+    sort_by_health: false          # true=按健康分动态排序源
   incremental:                      # 增量更新（.day尾部读取，毫秒级零网络）
     enable: true                    # fetch_daily 优先本地增量
     max_bars_per_request: 800       # 单次最大增量条数
@@ -313,6 +323,23 @@ print('通达信就绪:', mdc.tdx_client.login_success)
   `|增量首收/缓存末收-1| > 11%` 或增量内部跳变超阈值 → 疑似除权 → 回退在线源保证复权一致）
 - 无缓存锚点 / 异常 → 自动回退原三级退避链（行为不变）
 - 重采样升级：周/月K按交易日历过滤 + 最少K线数过滤（周≥3、月≥10，最新周期豁免保留）
+
+#### 5. 源健康评分与动态熔断（docs/step2.md 阶段2优化）
+
+`SourceHealth` 模块实时评估各数据源健康状态，自动屏蔽故障源、恢复后自动放回：
+- **健康分**：滑动窗口成功率×100（空数据记成功，停牌股不误熔断）
+- **熔断**：连续失败 ≥ fail_threshold(3) → 熔断该源；超过 recover_seconds(300) 自动恢复
+- **动态排序**：默认保持源优先级仅剔除熔断源；`sort_by_health: true` 时按健康分降序
+- **协议增量**：`TdxProtocolClient`（easy_tdx → mootdx Quotes 自动降级）在本地 .day 缺失时
+  从行情服务器（119.147.212.81:7709）补充；服务器不可达时退避链兜底
+
+> 依赖说明：`easy_tdx` 为可选依赖（requirements.txt 注释），未安装自动降级 mootdx Quotes。
+> 本机环境 easy_tdx 安装失败（pip sha256 校验异常）且行情服务器不可达（网络限制），
+> 协议补充为空由 akshare/baostock 兜底——健康熔断会记录这些故障源的状态。
+>
+> 集成修复：① 重采样交易日历可能落后于增量数据（缓存 vs .day），已修复为保留
+> "日历 ∪ 日历之后"（最新交易日不被误删）；② .day 增量无换手率字段 → 合并后
+> 前向填充近似（用缓存最近值），保证最新交易日换手率/量比可计算。
 
 ### 输出文件说明
 
@@ -449,7 +476,7 @@ print('通达信就绪:', mdc.tdx_client.login_success)
 
 ## 版本信息
 
-- **版本**: 1.7.0
+- **版本**: 1.8.0
 - **作者**: Mystery Team
 - **更新时间**: 2026-08-14
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）

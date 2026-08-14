@@ -33,6 +33,7 @@ from akshare_client import AkshareClient
 from baostock_client import BaostockClient, BAOSTOCK_LOCK
 from db_manager import MysteryDB
 from kline_resampler import KLineResampler
+from source_health import SourceHealth
 from tdx_gbbq import TdxGBBQ
 from tdx_incremental import TdxIncremental
 from tdx_local_client import TdxLocalClient
@@ -56,11 +57,14 @@ class MarketDataClient:
             rate_limit=ds_cfg.get("rate_limit_akshare", 0.3),
             timeout=ds_cfg.get("timeout", 30))
         self.bs_client = BaostockClient()
-        # 通达信本地数据源（tdx_local）
+        # 通达信本地数据源（tdx_local，含协议增量补充）
         tdx_cfg = ds_cfg.get("tdx", {})
         self.tdx_client = TdxLocalClient(
             vipdoc_dir=tdx_cfg.get("vipdoc_dir"),
-            enable=tdx_cfg.get("enable", True))
+            enable=tdx_cfg.get("enable", True),
+            config=config)
+        # 源健康评分与动态熔断（docs/step2.md）
+        self.source_health = SourceHealth(config)
         # 升级版重采样器（交易日历感知 + 最少K线数过滤）
         self.resampler = KLineResampler(config)
         self.primary = ds_cfg.get("primary", "akshare")
@@ -208,6 +212,11 @@ class MarketDataClient:
                       .sort_values('日期'))
             merged['日期'] = merged['日期'].dt.strftime('%Y-%m-%d')
             merged['代码'] = db_code  # 统一9位格式
+            # 增量行(.day)无换手率字段 → 用缓存最近值前向填充（近似，保证分析连续性）
+            # 说明: .day 文件不含换手率，增量行该列为 None；ffill 用前一交易日值近似，
+            # 使最新交易日换手率/量比等指标可计算（误差仅限最近几天增量）。
+            if '换手率' in merged.columns:
+                merged['换手率'] = merged['换手率'].ffill()
             logger.info(f"⚡ [{code}] 增量更新: 缓存{len(cached_cn)}条 + 增量{len(delta)}条"
                         f" → 合并{len(merged)}条（last_date={last_date}）")
             return self._slice(merged, start_date, end_date)
@@ -275,36 +284,50 @@ class MarketDataClient:
     def _fetch_with_fallback(self, code: str, period: str,
                              start_date: str, end_date: str) -> pd.DataFrame:
         """
-        主备源退避获取：
-        先主源重试 retry_times 次（指数退避）→ 失败切换备用源 → 全部失败返回空
+        主备源退避获取（健康评分 + 动态熔断，docs/step2.md）：
+        先按健康状态过滤源（熔断剔除）→ 主源重试 retry_times 次（指数退避）
+        → 失败切换备用源 → 全部失败返回空
         """
+        # 健康过滤：剔除熔断中的源（可配置按健康分动态排序）
+        ordered = self.source_health.get_ordered_sources(self.source_order)
         # tdx 空结果缓存：本地数据包缺失时跳过 tdx 源（避免重复空转）
         if self._tdx_empty_codes:
-            sources = [s for s in self.source_order if not (
+            sources = [s for s in ordered if not (
                 s == "tdx_local" and code in self._tdx_empty_codes)]
         else:
-            sources = self.source_order
+            sources = ordered
 
         last_error = None
         for src in sources:
             switched_fast = False  # tdx 本地无数据快速切换标记
             for attempt in range(self.retry_times):
+                start_time = time.time()
                 try:
                     df = self._fetch_from_source(src, code, period, start_date, end_date)
+                    latency = (time.time() - start_time) * 1000
                     if df is not None and not df.empty:
+                        # 成功：记录健康分
+                        self.source_health.record(src, True, latency)
                         # 统一列名标准化（不同源可能返回 date/日期 差异）
                         df = self._normalize_columns(df)
-                        logger.info(f"[{src}] {code} {period} 获取成功，{len(df)} 条")
+                        logger.info(f"[{src}] {code} {period} 获取成功，"
+                                    f"{len(df)} 条，耗时{latency:.0f}ms")
                         return df
-                    # 空结果视为失败；tdx_local 本地无文件重试无意义，直接切换下一源
+                    # 空结果视为无数据（非故障）：记录成功避免停牌股误熔断；
+                    # tdx_local 本地无文件重试无意义，直接切换下一源
+                    self.source_health.record(src, True, latency)
                     last_error = RuntimeError(f"{src} 返回空数据")
                     if src == "tdx_local":
                         self._tdx_empty_codes.add(code)
-                        logger.info(f"[tdx_local] {code} {period} 本地无数据，快速切换下一源")
+                        logger.info(f"[tdx_local] {code} {period} 本地无数据，"
+                                    f"快速切换下一源")
                         switched_fast = True
                         break  # 跳过该源剩余重试
                 except Exception as e:
                     last_error = e
+                    latency = (time.time() - start_time) * 1000
+                    # 失败：记录健康分（连续失败达到阈值触发熔断）
+                    self.source_health.record(src, False, latency)
                     wait = self.retry_delay * (2 ** attempt)
                     logger.warning(f"[{src}] {code} {period} 第{attempt+1}次失败: "
                                    f"{str(e)[:100]}，{wait:.1f}s后重试")
