@@ -255,6 +255,20 @@ data_source:
     vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # 默认绝对路径(仓库外)，可用环境变量TDX_VIPDOC_DIR覆盖
     enable: true               # 是否启用本地源
     auto_download: false       # 是否自动触发下载（建议手动/定时）
+    gbbq_file: "/home/ai/ai_runner/stock/data/tdx_vipdoc/cw/gbbq"  # 除权除息文件(可选，无则增量走连续性检查)
+
+  # 增量更新（docs/step1.md 阶段1优化）：本地.day文件尾部读取，零网络
+  incremental:
+    enable: true               # 是否启用增量更新（fetch_daily优先本地增量）
+    max_bars_per_request: 800  # 单次最大增量条数（尾部截断）
+    gap_threshold: 0.11        # 除权断裂检测阈值（|增量首收/缓存末收-1|>阈值视为除权，回退在线源）
+
+  # 日K重采样升级（docs/step1.md 阶段1优化）：交易日历感知 + 最少K线数过滤
+  resample:
+    min_bars_weekly: 3         # 周K最少日K根数（不足剔除，最新周期豁免）
+    min_bars_monthly: 10       # 月K最少日K根数（不足剔除，最新周期豁免）
+    use_trading_calendar: true # 仅保留交易日（日历来自缓存日K日期并集）
+    keep_latest_period: true   # 最新周期豁免（进行中的周/月K必须保留）
 
   # K线保留条数（循环覆盖，控制存储成本）
   kline_limit:

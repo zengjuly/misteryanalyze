@@ -163,7 +163,9 @@ class MysteryDataEngine:
                 return pd.DataFrame()
             df_clean = self._clean_kline(df)
             if auto_backfill and not df_clean.empty:
-                self.db.upsert_kline(df_clean, code, period)
+                # 双源模式同样应用循环覆盖（kline_limit）
+                max_rows = self.kline_limit.get(period) if self.kline_limit else None
+                self.db.upsert_kline(df_clean, code, period, max_rows=max_rows)
             return df_clean
 
         # 单源模式（兼容旧逻辑）：baostock 直连 + 重试

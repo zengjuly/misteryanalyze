@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.6.0
+- **版本**: 1.7.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-13
+- **更新日期**: 2026-08-14
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -755,6 +755,71 @@ data_source:
     monthly: 300
     enable_cleanup: true
 ```
+
+### 4.7 增量更新与复权因子（docs/step1.md 阶段1优化）— ★★
+
+**方案概述**：基于 step1.md 实施指南，实现**本地 .day 文件增量更新**（毫秒级、零网络）、
+**除权除息复权因子**（gbbq 解析 + 前复权计算）与**重采样升级**（交易日历感知 + 最少K线数过滤），
+将"每日分析全量网络拉取"优化为"本地增量 + 缓存直读"。
+
+**① 增量更新器（data/tdx_incremental.py，新增）**：
+- 直接 `struct.unpack('<IIIIIfII')` 解析 .day 文件（32字节/条），不依赖 mootdx，性能极高
+- `fetch_delta(code, last_date)`：仅读取 **last_date 之后** 的尾部记录（幂等，重复同步不重复）
+- 兼容两种目录结构：标准 `{vipdoc}/{market}/lday/` 与历史遗留扁平文件名
+  `sh\lday\sh600150.day`（旧版 extractall 把 zip 内反斜杠路径当文件名的 bug，见 ⑥）
+- 返回标准中文列名 DataFrame；成交量 股→手（/100，与 AKShare 一致）；涨跌幅 pct_change 重算
+- 市场判定 `6/9/5→sh、0/2/3→sz、4/8→bj`
+
+**② 复权因子（data/tdx_gbbq.py，新增）**：
+- 解析通达信 gbbq 文件（60字节/条：date+code+送股/配股/配股价/转增/派息）→ 除权事件表
+- `calc_qfq_factor(daily_df, events)`：前复权因子（**除权日实际价格比**算法，数学上等价于精确前复权；
+  最新交易日因子=1，自最新向最早遍历除权日，除权日之前价格 ×= 除权日收盘/前一日收盘）
+- `calc_hfq_factor`：后复权因子（从最早累计向上调整）
+- `apply_adjust(code, daily_df, adjust)`：统一应用复权（仅处理存在的价格列，缺列安全）
+- **无 gbbq 文件时 graceful 降级**（factors_available=False），由上层连续性检查兜底
+
+**③ 重采样升级（data/kline_resampler.py）**：
+- `set_calendar(calendar)`：注入交易日历（来源 `db.get_trading_calendar()` = 缓存日K日期并集）
+- 最少K线数过滤：周K≥`min_bars_weekly`(3)、月K≥`min_bars_monthly`(10) 根日K，不足剔除
+- `keep_latest_period=true`（默认）：**最新周期豁免**（进行中的周/月K必须保留，否则最新分析数据缺失）
+- 向后兼容：不传 config 时使用默认参数
+
+**④ MarketDataClient 增量集成（data/market_data_client.py）**：
+- `fetch_daily` 增量优先：查 `db.get_last_date` → 读 .day 尾部增量 →
+  - 无增量 → **直接返回缓存**（零网络，毫秒级）
+  - 有增量 → 复权处理 → 缓存+增量合并（同日期以增量为准）→ 返回完整序列
+  - 无缓存锚点 / 除权断裂 / 异常 → 返回 None 回退在线源（原三级退避不变）
+- 复权一致性决策树（`_adjust_delta`）：
+  1. gbbq 因子可用 → 直接应用复权调整
+  2. 否则连续性检查：`|增量首收盘/缓存末收盘 - 1| > gap_threshold(0.11)` → 疑似除权 → 回退在线源
+  3. 增量内部跳变 > 阈值 → 疑似窗口内除权 → 回退在线源
+  4. 通过 → 直接合并（前复权不改变最新价，增量原始价与缓存前复权价在最新段基准一致）；
+     仅当增量首日与缓存末日**重叠**时才做比例对齐
+- `db_manager` 扩展：`get_last_date`（增量锚点）、`get_trading_calendar`、`upsert_kline` 兼容中文列名
+- `data_engine` 双源模式 upsert 补传 `max_rows`（循环覆盖在双源模式同样生效）
+- 实测：600150 每日分析从 18.8s（akshare 重试+退避）→ **0.11s**（缓存直读，零网络）
+
+**⑤ 配置（config/config.yaml data_source 段新增）**：
+```yaml
+data_source:
+  incremental:
+    enable: true               # 增量更新开关（fetch_daily 优先本地增量）
+    max_bars_per_request: 800  # 单次最大增量条数
+    gap_threshold: 0.11        # 除权断裂检测阈值
+  resample:
+    min_bars_weekly: 3
+    min_bars_monthly: 10
+    use_trading_calendar: true
+    keep_latest_period: true
+  tdx:
+    gbbq_file: "/home/ai/ai_runner/stock/data/tdx_vipdoc/cw/gbbq"  # 可选
+```
+
+**⑥ 数据包解压修复（scripts/download_tdx_packages.py）**：
+- 历史 bug：`zipfile.extractall` 把通达信 zip 内反斜杠路径（`sh\lday\sh600150.day`）直接当文件名解压，
+  产生 12345 个扁平文件，mootdx/TdxLocalClient 目录结构读取失效（tdx_local 主源从未真正命中）
+- 修复：`_safe_extract()` 反斜杠→正斜杠按目录解压 + zip slip 防护；`fix_flat_structure()` 幂等修复遗留扁平结构
+- 用法：`python scripts/download_tdx_packages.py --fix-flat`（修复遗留文件，无需重新下载）
 
 ## 5. 接口设计
 

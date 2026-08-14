@@ -178,17 +178,68 @@ class MysteryDB:
                 conn.close()
 
     # ============ 行情数据 ============
+    # 中文列名 → 英文列名（兼容 TdxIncremental / 各数据源中文输出）
+    CN_TO_EN = {
+        '日期': 'date', '开盘价': 'open', '最高价': 'high', '最低价': 'low',
+        '收盘价': 'close', '成交量': 'volume', '成交额': 'amount',
+        '换手率': 'turn', '涨跌幅': 'pctChg', '代码': 'code',
+        '前收盘': 'preclose', '复权因子': 'adjustflag', '交易状态': 'tradestatus',
+        '是否ST': 'isST',
+    }
+
+    @classmethod
+    def _normalize_kline_cols(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """将DataFrame列名统一为英文（兼容中文/英文混合输入）"""
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        df = df.rename(columns=cls.CN_TO_EN)
+        # 删除残留中文列（避免重复列）
+        for cn in cls.CN_TO_EN:
+            if cn in df.columns:
+                df = df.drop(columns=[cn])
+        # 去重列名安全兜底
+        return df.loc[:, ~df.columns.duplicated()]
+
+    def get_last_date(self, code: str, period: str = 'daily') -> Optional[str]:
+        """获取指定股票某周期的最大日期（增量更新锚点）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "SELECT MAX(date) FROM stock_kline_data WHERE code=? AND period=?",
+                    (code, period))
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+            finally:
+                conn.close()
+
+    def get_trading_calendar(self) -> List[str]:
+        """从缓存日K生成全市场交易日历（所有daily日期去重升序）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "SELECT DISTINCT date FROM stock_kline_data "
+                    "WHERE period='daily' ORDER BY date")
+                return [r[0] for r in cur.fetchall()]
+            finally:
+                conn.close()
+
     def upsert_kline(self, df: pd.DataFrame, code: str, period: str,
                      max_rows: int = None) -> int:
         """
         线程安全增量写入行情（(code,date,period)联合主键，INSERT OR REPLACE）
         :param df: 含 date/open/high/low/close/volume/amount/turn 等列的DataFrame
+                   （兼容中文列名：日期/开盘价/...，自动转换）
         :param code: 证券代码（9位 sh.600150）
         :param period: 周期 daily/weekly/monthly
         :param max_rows: 可选，写入后仅保留最新max_rows条（循环覆盖）
         """
         if df is None or df.empty:
             return 0
+        # 列名统一为英文（兼容中文/英文混合输入）
+        df = self._normalize_kline_cols(df)
         with self._lock:
             conn = self._connect()
             try:

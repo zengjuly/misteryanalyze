@@ -38,7 +38,9 @@ stock_analyzer/
 │   ├── baostock_client.py # baostock数据客户端
 │   ├── akshare_client.py  # AKShare数据源客户端
 │   ├── tdx_local_client.py # 通达信本地数据客户端(mootdx)
-│   ├── kline_resampler.py # 日K→周K/月K聚合器
+│   ├── tdx_incremental.py # 通达信增量更新器(.day尾部读取,零网络) ★
+│   ├── tdx_gbbq.py        # 除权除息(gbbq)解析与复权因子计算 ★
+│   ├── kline_resampler.py # 日K→周K/月K聚合器(交易日历感知+最少K线过滤) ★
 │   ├── market_data_client.py # 统一数据入口(三级退避)
 │   ├── data_processor.py  # 数据预处理
 │   ├── db_manager.py      # SQLite本地缓存数据库（三表/联合主键/索引）
@@ -236,6 +238,16 @@ data_source:
     vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # 本地数据目录(仓库外)
     enable: true
     auto_download: false
+    gbbq_file: "/home/ai/ai_runner/stock/data/tdx_vipdoc/cw/gbbq"  # 除权文件(可选)
+  incremental:                      # 增量更新（.day尾部读取，毫秒级零网络）
+    enable: true                    # fetch_daily 优先本地增量
+    max_bars_per_request: 800       # 单次最大增量条数
+    gap_threshold: 0.11             # 除权断裂检测阈值（超阈值回退在线源）
+  resample:                         # 重采样升级（step1.md）
+    min_bars_weekly: 3              # 周K最少日K根数（最新周期豁免）
+    min_bars_monthly: 10            # 月K最少日K根数（最新周期豁免）
+    use_trading_calendar: true      # 仅保留交易日（日历来自缓存日K并集）
+    keep_latest_period: true        # 最新周期豁免（进行中的周/月K保留）
   kline_limit:                      # K线保留条数（循环覆盖控制存储）
     daily: 2000
     weekly: 500
@@ -252,9 +264,16 @@ data_source:
 # 仅下载日线数据包
 /home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py --pkg hsjday
 
+# 修复历史遗留扁平结构（旧版解压bug产生的反斜杠文件名→标准目录结构，幂等）
+/home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py --fix-flat
+
 # 自定义目录（环境变量覆盖，默认 /home/ai/ai_runner/stock/data/tdx_vipdoc）
 TDX_VIPDOC_DIR=/path/to/tdx_vipdoc /home/ai/ai_runner/venv/bin/python scripts/download_tdx_packages.py
 ```
+
+> ⚠️ 历史 bug 说明：旧版解压脚本 `extractall` 会把通达信 zip 内的反斜杠路径（`sh\lday\sh600150.day`）
+> 直接当文件名解压成扁平文件，导致 mootdx 目录读取失效。已修复解压逻辑（`_safe_extract`），
+> 遗留扁平文件可用 `--fix-flat` 一键修复（TdxIncremental 增量读取同时兼容扁平结构，修复前也能工作）。
 
 数据目录结构（Git 仓库外，.gitignore 已忽略 *.day/*.zip）：
 ```
@@ -285,6 +304,15 @@ print('通达信就绪:', mdc.tdx_client.login_success)
 
 > 提示：通达信本地源仅提供日K（周/月K由日K重采样），财务数据由 AKShare/Baostock 兜底获取。
 > 本地数据包需定期重新下载更新（建议每日定时任务）。
+
+#### 4. 增量更新（docs/step1.md 阶段1优化）
+
+每日分析优先走**本地增量**：`fetch_daily` 查缓存最新日期 → 读 `.day` 文件尾部增量 → 缓存+增量合并。
+- 缓存已最新（无增量）→ **直接返回缓存**，毫秒级零网络（实测 600150 从 18.8s → 0.11s）
+- 有增量 → 复权一致性处理（gbbq 因子可用则应用复权；否则连续性检查
+  `|增量首收/缓存末收-1| > 11%` 或增量内部跳变超阈值 → 疑似除权 → 回退在线源保证复权一致）
+- 无缓存锚点 / 异常 → 自动回退原三级退避链（行为不变）
+- 重采样升级：周/月K按交易日历过滤 + 最少K线数过滤（周≥3、月≥10，最新周期豁免保留）
 
 ### 输出文件说明
 
@@ -421,9 +449,9 @@ print('通达信就绪:', mdc.tdx_client.login_success)
 
 ## 版本信息
 
-- **版本**: 1.6.0
+- **版本**: 1.7.0
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-13
+- **更新时间**: 2026-08-14
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 许可证
