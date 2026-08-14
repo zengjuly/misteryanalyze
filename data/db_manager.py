@@ -26,8 +26,10 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# 数据库默认路径
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mystery_cache.db')
+# 数据库默认路径（环境变量 MYSTERY_DB_PATH 可覆盖，docs/step3.md 路径统一）
+_DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'mystery_cache.db')
+DEFAULT_DB_PATH = os.environ.get('MYSTERY_DB_PATH', _DEFAULT_DB)
 
 
 class MysteryDB:

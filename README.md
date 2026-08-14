@@ -42,6 +42,8 @@ stock_analyzer/
 │   ├── tdx_gbbq.py        # 除权除息(gbbq)解析与复权因子计算 ★
 │   ├── tdx_protocol_client.py # 通达信行情协议客户端(本地缺失时增量补充) ★
 │   ├── source_health.py   # 源健康评分与动态熔断(故障源自动屏蔽) ★
+│   ├── source_report.py   # 源健康报告生成(JSON, 可观测性) ★
+│   ├── financial_storage.py # 财务数据标准化存储门面(SQLite宽表) ★
 │   ├── kline_resampler.py # 日K→周K/月K聚合器(交易日历感知+最少K线过滤) ★
 │   ├── market_data_client.py # 统一数据入口(三级退避)
 │   ├── data_processor.py  # 数据预处理
@@ -62,7 +64,11 @@ stock_analyzer/
 │   └── html_generator.py  # HTML报告生成
 ├── utils/                 # 工具模块
 │   ├── exception_handler.py # 异常处理
+│   ├── path_utils.py      # 路径解析(环境变量优先) ★
 │   └── __init__.py       # 工具函数
+├── tests/                 # 单元测试(unittest) ★
+│   ├── test_path_utils.py / test_resampler.py / test_incremental.py
+│   └── test_trim_kline.py / test_fallback.py
 ├── main.py               # 主执行程序
 ├── test_system.py        # 系统测试
 ├── simple_demo.py        # 简化演示
@@ -168,11 +174,13 @@ python3 run_analysis.py --test
 |---|---|---|
 | `--period` | 同步周期：daily/weekly/monthly | daily |
 | `--days` | 回溯天数（日线1100≈3年，周线1830≈5年，月线3650≈10年） | 按周期 |
-| `--threads` | 线程数。⚠️ baostock 为全局单 socket 连接，多线程并发会导致 utf-8 解码错误/数据交错，**默认 1（串行最稳定）**，最多建议 2-4 | 1 |
+| `--threads` | 线程数。⚠️ baostock 为全局单 socket 连接，多线程并发会导致 utf-8 解码错误/数据交错，**默认读 config sync.threads（baostock=1 串行最稳定）**，最多建议 2-4 | config |
 | `--limit` | 仅同步前N只（测试用） | 全部 |
 | `--index` | 是否包含指数 | 否（仅股票） |
+| `--checkpoint` | 断点文件路径（JSON，中断后重新运行跳过已完成，支持续传） | config sync.checkpoint_file |
+| `--no-progress` | 关闭 tqdm 进度条 | 显示进度条 |
 
-> 系统已内置网络容错：数据包解码错误自动重试（3次+退避）、连接损坏自动重新登录重建。若网络弱导致部分股票返回空，可重新运行同步命令补齐。
+> 系统已内置网络容错：数据包解码错误自动重试（3次+退避）、连接损坏自动重新登录重建。若网络弱导致部分股票返回空，可重新运行同步命令补齐（断点续传会自动跳过已完成）。
 
 #### 2. 全市场扫描分析
 
@@ -476,10 +484,42 @@ print('通达信就绪:', mdc.tdx_client.login_success)
 
 ## 版本信息
 
-- **版本**: 1.8.0
+- **版本**: 1.9.0
 - **作者**: Mystery Team
 - **更新时间**: 2026-08-14
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
+
+## 首次部署 Checklist
+
+1. **环境准备**：`python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
+   （另需 `pip install tqdm`；`easy_tdx` 可选，未安装自动降级 mootdx Quotes）
+2. **配置**：编辑 `config/config.yaml`（股票列表、数据源、增量/健康/同步参数）
+3. **下载通达信本地数据包**（离线主源，可选但推荐）：
+   ```bash
+   python scripts/download_tdx_packages.py            # 下载 hsjday/tdxfin/tdxgp
+   python scripts/download_tdx_packages.py --fix-flat # 修复旧版扁平结构（历史遗留）
+   ```
+4. **全市场同步**（构建 SQLite 缓存，首次约需较长时间）：
+   ```bash
+   python data/sync_all_market.py --days 1100         # 断点续传+进度条
+   ```
+5. **冒烟测试**：`python run_analysis.py --mode single --stock sh600150`
+6. **单元测试**：`python -m unittest discover -s tests`（32/32 通过）
+7. **定时任务**：每日 15:30 运行每日分析（Hermes cron '股票每日分析'）；闭市后可增量同步+扫描
+   ```bash
+   python data/sync_all_market.py --period daily --days 365  # 每日增量（断点续传）
+   python data/run_market_scan.py                            # 全市场扫描
+   ```
+
+## 环境变量说明
+
+| 环境变量 | 说明 | 默认 |
+|---|---|---|
+| `TDX_VIPDOC_DIR` | 通达信本地数据目录（.day 文件） | /home/ai/ai_runner/stock/data/tdx_vipdoc |
+| `MYSTERY_DB_PATH` | SQLite 缓存数据库路径 | data/mystery_cache.db |
+| `SOURCE_REPORT_DIR` | 源健康报告输出目录 | logs/ |
+
+> 路径解析统一规则（docs/step3.md）：**环境变量 > 配置值 > 默认值**，见 `utils/path_utils.py`。
 
 ## 许可证
 

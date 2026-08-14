@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.8.0
+- **版本**: 1.9.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-14
 - **文档类型**: 系统设计文档
@@ -883,6 +883,52 @@ data_source:
   分析打印/HTML 生成崩溃（NoneType.format）。修复：合并后 `换手率.ffill()`（用缓存最近值近似）；
   main.py 技术指标打印 + html_generator `_val` 加 `or 0` 防御
 - 实测：修复后 600150 完整单股分析无异常（最新价 33.42/换手率 0.87% 近似值/周月线 33.42）
+
+### 4.9 生产化增强（docs/step3.md 阶段3优化）— ★★
+
+**方案概述**：基于 step3.md 实施指南，完成**财务数据本地化接口**、**路径环境变量优先**、
+**可观测性（源健康报告）**、**单元测试**与**并发同步优化（断点续传+进度条）**，达到生产级标准。
+
+**① 路径与环境变量优先（utils/path_utils.py，新增）**：
+- `resolve_path(env_key, config_value, default)`：**环境变量 > 配置值 > 默认值**
+- `resolve_path_abs`：相对路径转绝对（base_dir 可指定）
+- 应用点：`TDX_VIPDOC_DIR`（tdx_local_client/market_data_client 的 vipdoc 路径）、
+  `MYSTERY_DB_PATH`（db_manager 数据库路径）、`SOURCE_REPORT_DIR`（源健康报告目录）
+
+**② 财务数据本地化接口（tdx_local_client + financial_storage）**：
+- `TdxLocalClient.get_financial_data(stock_code)`：本地财务读取接口（标准化字段）；
+  说明：通达信 gpcw*.dat 为专有二进制格式，mootdx 0.11.7 financial 为空包 → 暂不解析，
+  返回空由 AKShare/Baostock 在线源兜底（现有流程已覆盖并缓存 SQLite）
+- `financial_source_status()`：探测本地财务包状态（gpcw*.zip 数量），可观测性用
+- `data/financial_storage.py`（新增）：财务标准化存储门面——封装 `stock_financial_data`
+  宽表（主键 code+report_date）：save_financial（中文/英文列名兼容）/ load_latest /
+  load_history / is_cached / local_source_status（gpcw 探测）
+
+**③ 可观测性（data/source_report.py，新增）**：
+- `generate_source_report(source_health, output_dir)`：导出源健康 JSON 报告
+  （时间戳 + 摘要：总源数/熔断数/平均健康分 + 各源：成功/失败/连续失败/健康分/is_open/平均耗时）
+- CLI：`python data/source_report.py`（从真实 MarketDataClient 生成）或 `--stats-json`
+
+**④ 并发与同步优化（sync_all_market.py 增强）**：
+- **断点续传**：`--checkpoint` 或 config `sync.checkpoint_file`；JSON 记录已完成股票代码，
+  中断后重新运行自动跳过（原子写入 .tmp + os.replace 防损坏）；全部完成时直接跳过
+- **进度条**：tqdm（`--no-progress` 关闭，tqdm 未安装自动降级日志进度）
+- **配置化线程**：config `sync.threads`（tdx_local=8 / akshare=4 / baostock=1——
+  baostock 全局单 socket 必须串行），`--threads` 可覆盖
+- 配置（config.yaml sync 段）：threads / batch_size / checkpoint_file
+
+**⑤ 单元测试（tests/，新增，unittest 标准库）**：
+- `test_path_utils.py`：环境变量覆盖/配置兜底/默认兜底/相对转绝对
+- `test_resampler.py`：min_bars 边界/keep_latest 豁免/日历过滤（周末剔除）/
+  日历落后增量（最新交易日保留）/月K聚合/空输入
+- `test_incremental.py`：增量幂等/尾部读取/价格解析/扁平结构兼容/市场判定
+- `test_trim_kline.py`：循环覆盖（120→100）/中文列 upsert/get_last_date/交易日历
+- `test_fallback.py`：健康熔断/恢复/空数据不误熔断/排序/disable + 主源失败切换回归
+- 运行：`python -m unittest discover -s tests`（32/32 通过）
+
+**⑥ 重采样日历过滤再升级**（kline_resampler.py）：
+- 规则细化：保留"日历中日期 ∪ 日历最大日期之后的工作日"（pandas 3.0 用 `dt.dayofweek`），
+  无日历时仅剔除周末——既支持增量最新交易日，也剔除混入的周末数据
 
 ## 5. 接口设计
 

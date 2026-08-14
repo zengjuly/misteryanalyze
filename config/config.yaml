@@ -222,6 +222,15 @@ scheduler:
     weekly_day: 5  # 周五
     monthly_day: 1  # 每月1日
 
+# 全市场同步配置（docs/step3.md 并发与同步优化）
+sync:
+  threads:
+    tdx_local: 8      # 本地读取可多线程
+    akshare: 4        # 爬虫源限速
+    baostock: 1       # baostock全局单socket，必须串行（多线程会解码错误）
+  batch_size: 50
+  checkpoint_file: "data/sync_checkpoint.json"  # 断点续传文件（中断后跳过已完成）
+
 # 开发调试配置
 debug:
   # 调试模式

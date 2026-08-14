@@ -28,11 +28,16 @@ import pandas as pd
 # 确保 data/ 目录在 sys.path（支持 data.market_data_client 与 market_data_client 两种导入方式）
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 确保 utils/ 目录在 sys.path（统一路径解析工具）
+_UTILS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'utils')
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
 
 from akshare_client import AkshareClient
 from baostock_client import BaostockClient, BAOSTOCK_LOCK
 from db_manager import MysteryDB
 from kline_resampler import KLineResampler
+from path_utils import resolve_path
 from source_health import SourceHealth
 from tdx_gbbq import TdxGBBQ
 from tdx_incremental import TdxIncremental
@@ -92,8 +97,9 @@ class MarketDataClient:
         # 本地缓存数据库（增量锚点/缓存合并用）
         self.db = MysteryDB()
         # 通达信增量更新器（.day文件尾部读取）
-        vipdoc_dir = (tdx_cfg.get("vipdoc_dir")
-                      or "/home/ai/ai_runner/stock/data/tdx_vipdoc")
+        vipdoc_dir = resolve_path('TDX_VIPDOC_DIR',
+                                  tdx_cfg.get("vipdoc_dir"),
+                                  "/home/ai/ai_runner/stock/data/tdx_vipdoc")
         self.tdx_incremental = TdxIncremental(
             vipdoc_dir=vipdoc_dir,
             db_manager=self.db,

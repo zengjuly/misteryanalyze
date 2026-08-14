@@ -109,13 +109,18 @@ class KLineResampler:
 
         # 1.5 交易日历过滤（仅保留交易日）
         # 注意: 日历来自缓存日K日期并集，可能落后于最新数据（如增量合并带来的最新交易日）。
-        # 因此保留"日历中的日期" ∪ "日历最大日期之后的日期"（最新交易日/增量数据），
-        # 只剔除日历范围内的非交易日（周末/节假日）。
-        if self.use_trading_calendar and self._calendar is not None \
-                and len(self._calendar) > 0:
-            cal_max = self._calendar.max()
+        # 规则: 保留"日历中的日期" ∪ "日历最大日期之后的工作日"（增量最新交易日）；
+        # 剔除日历范围内非交易日（周末/节假日）以及日历之后混入的周末。
+        if self.use_trading_calendar:
             dates = df["日期"].dt.normalize()
-            df = df[dates.isin(self._calendar) | (dates > cal_max)]
+            if self._calendar is not None and len(self._calendar) > 0:
+                cal_max = self._calendar.max()
+                in_cal = dates.isin(self._calendar)
+                after_cal_weekday = (dates > cal_max) & (dates.dt.dayofweek < 5)
+                df = df[in_cal | after_cal_weekday]
+            else:
+                # 无日历仅剔除周末（周一~周五保留）
+                df = df[dates.dt.dayofweek < 5]
 
         df = df.set_index("日期")
 

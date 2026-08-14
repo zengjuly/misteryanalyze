@@ -17,6 +17,7 @@ TdxLocalClient - 通达信本地数据客户端（mootdx）
   可通过环境变量 TDX_VIPDOC_DIR 覆盖
 """
 
+import glob
 import logging
 import os
 
@@ -28,6 +29,15 @@ try:
 except ImportError:
     MOOTDX_AVAILABLE = False
     logging.warning("⚠️ mootdx 未安装，通达信本地数据源不可用")
+
+# 统一路径解析（环境变量 > 配置 > 默认，docs/step3.md）
+try:
+    from path_utils import resolve_path
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    '..', 'utils'))
+    from path_utils import resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +51,10 @@ class TdxLocalClient:
 
     def __init__(self, vipdoc_dir: str = None, enable: bool = True,
                  config: dict = None):
-        # 优先级: 环境变量 > 配置 > 默认绝对路径（仓库外）
-        self.vipdoc_dir = (os.getenv("TDX_VIPDOC_DIR")
-                           or vipdoc_dir
-                           or "/home/ai/ai_runner/stock/data/tdx_vipdoc")
+        # 优先级: 环境变量TDX_VIPDOC_DIR > 配置 > 默认绝对路径（仓库外）
+        self.vipdoc_dir = resolve_path(
+            'TDX_VIPDOC_DIR', vipdoc_dir,
+            '/home/ai/ai_runner/stock/data/tdx_vipdoc')
         self.enable = enable and MOOTDX_AVAILABLE
         self.reader = None
         self.login_success = False
@@ -150,6 +160,47 @@ class TdxLocalClient:
             logger.info(f"📡 [{stock_code}] 本地无数据，协议补充 "
                         f"{len(df)} 条（{start_date}~{end_date}）")
         return df
+
+    # ============ 财务数据（docs/step3.md 财务本地化） ============
+    def get_financial_data(self, stock_code: str) -> pd.DataFrame:
+        """
+        读取本地财务数据（标准化字段：报告期/每股收益/每股净资产/ROE/净利润等）
+
+        说明: 通达信财务包（gpcw*.dat，专有二进制格式）解析依赖 mootdx.financial；
+        mootdx 0.11.7 financial 为空包 → 无法本地解析，返回空由上层
+        （AKShare/Baostock）兜底获取并缓存至 SQLite（financial_storage）。
+        此处保留接口 + 探测本地财务包状态，便于后续接入自研解析。
+        """
+        code = self.normalize_stock_code(stock_code)
+        # 尝试 mootdx.financial（0.11.7 为空包，捕获 ImportError 降级）
+        try:
+            from mootdx.financial import Financial
+            fin = Financial(tdxdir=self.vipdoc_dir)
+            df = fin.get_stock_financial(symbol=code,
+                                         market=self._get_market(code))
+            if df is not None and not df.empty:
+                return df
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"mootdx财务解析 {code} 失败: {str(e)[:60]}")
+        # 探测本地财务包状态（可观测性）
+        gpcw = glob.glob(os.path.join(self.vipdoc_dir, 'gpcw*.zip'))
+        if gpcw:
+            logger.debug(f"{code} 本地财务包 {len(gpcw)} 个(gpcw*.zip)，"
+                         f"二进制解析暂未实现，由在线源兜底")
+        return pd.DataFrame()
+
+    def financial_source_status(self) -> dict:
+        """本地财务数据源状态（可观测性报告用）"""
+        gpcw = glob.glob(os.path.join(self.vipdoc_dir, 'gpcw*.zip'))
+        return {
+            'gpcw_count': len(gpcw),
+            'gpcw_samples': [os.path.basename(f) for f in gpcw[:3]],
+            'parse_supported': False,
+            'note': 'mootdx 0.11.7 financial为空包，gpcw二进制解析未实现；'
+                    '财务由在线源兜底并缓存SQLite',
+        }
 
     # 兼容其他周期接口（tdx本地仅日线，周/月由上层重采样）
     def get_weekly_data(self, stock_code: str, start_date: str = None,
