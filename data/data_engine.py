@@ -123,13 +123,17 @@ class MysteryDataEngine:
             if not cached.empty:
                 return cached
 
-        # 2. 缓存未命中 → 请求baostock
+        # 2. 缓存未命中 → 请求数据源
         if not auto_backfill:
             return pd.DataFrame()
 
-        if not self.ensure_login():
-            logger.error(f"❌ 登录失败，无法获取 {code} {period}")
-            return pd.DataFrame()
+        # 双源模式（market_client 存在）: tdx_local/akshare 本地优先，无需先登录 baostock；
+        # baostock 仅作最终兜底（_fetch_with_fallback 内按需登录）。
+        # 修复: 原逻辑无条件 ensure_login，baostock 登录失败时本地数据也无法获取（全灭）
+        if self.market_client is None:
+            if not self.ensure_login():
+                logger.error(f"❌ 登录失败，无法获取 {code} {period}")
+                return pd.DataFrame()
 
         # 计算默认日期范围（如未指定）
         if start_date is None or end_date is None:
@@ -162,10 +166,28 @@ class MysteryDataEngine:
             if df is None or df.empty:
                 return pd.DataFrame()
             df_clean = self._clean_kline(df)
+            # 换手率防污染: .day 增量行无换手率(None) → ffill 用最近值，避免 None 写入缓存
+            # 否则缓存积累 turn IS NULL 行，导致筹码集中度/换手率指标退化（3z 资金维度依赖换手率）
+            if 'turn' in df_clean.columns and df_clean['turn'].isna().any():
+                df_clean['turn'] = df_clean['turn'].ffill()
             if auto_backfill and not df_clean.empty:
                 # 双源模式同样应用循环覆盖（kline_limit）
                 max_rows = self.kline_limit.get(period) if self.kline_limit else None
-                self.db.upsert_kline(df_clean, code, period, max_rows=max_rows)
+                # 增量写入优化: 只写变化部分（date不在缓存中的增量行），
+                # 避免增量0条时全量重写数百行/增量1条时重写全部——全市场同步提速关键
+                cached = self.db.load_kline(code, period)
+                if cached is not None and not cached.empty \
+                        and 'date' in cached.columns:
+                    delta = df_clean[~df_clean['date'].isin(cached['date'])]
+                    if not delta.empty:
+                        self.db.upsert_kline(delta, code, period,
+                                             max_rows=max_rows)
+                else:
+                    # 无缓存 → 全量写入（先截断到保留上限，避免写6000行再trim删4000行）
+                    if max_rows and len(df_clean) > max_rows:
+                        df_clean = df_clean.tail(max_rows).reset_index(drop=True)
+                    self.db.upsert_kline(df_clean, code, period,
+                                         max_rows=max_rows)
             return df_clean
 
         # 单源模式（兼容旧逻辑）：baostock 直连 + 重试

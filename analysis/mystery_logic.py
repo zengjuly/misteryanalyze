@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from indicators.ma_indicators import MAIndicators
 from indicators.trend_indicators import TrendIndicators
 from indicators.momentum_indicators import MomentumIndicators
+from analysis.resonance_analyzer import ResonanceAnalyzer
 
 class MysteryLogic:
     """Mystery趋势交易论核心分析逻辑"""
@@ -16,6 +17,8 @@ class MysteryLogic:
         self.ma_indicators = MAIndicators()
         self.trend_indicators = TrendIndicators()
         self.momentum_indicators = MomentumIndicators()
+        # 三振共振分析器（docs/3z.md 四维共振：个股30+大盘25+行业25+资金20）
+        self.resonance_analyzer = ResonanceAnalyzer()
     
     def basic_filter(self, data: pd.DataFrame) -> Tuple[bool, List[str]]:
         """
@@ -85,90 +88,130 @@ class MysteryLogic:
             return False, errors
     
     def three_resonance_analysis(self, data: pd.DataFrame, market_data: Dict = None,
-                                 industry_trend: bool = None) -> Dict[str, Any]:
+                                 industry_trend: bool = None,
+                                 industry_data: Dict = None) -> Dict[str, Any]:
         """
-        三振共振选股法（个股 + 行业 + 大盘）
+        三振共振选股法（docs/3z.md 四维共振：个股30+大盘25+行业25+资金20）
         :param data: 个股数据（含技术指标）
         :param market_data: 大盘指数数据字典 {指数名: DataFrame}（可选）
-        :param industry_trend: 行业趋势判断结果 True/False/None（可选，由外部计算）
-        :return: 共振分析结果
+        :param industry_trend: 行业趋势 bool（外部计算，industry_data 为空时使用）
+        :param industry_data: {行业名: DataFrame}（可选，含收盘价/成交额，
+                              走优化版行业趋势分析）
+        :return: 共振分析结果（含四维评分/级别/最强板块/资金活跃度）
         """
         try:
             result = {
-                '个股趋势': False,
-                '行业趋势': False,
-                '大盘趋势': False,
-                '三级共振': False,
-                '详情': []
+                '个股趋势': False, '行业趋势': False, '大盘趋势': False,
+                '三级共振': False, '共振评分': 0, '共振级别': '无共振',
+                '共振建议': '', '资金活跃': False, '最强板块': [],
+                '大盘位置': '未知', '真三振': False, '详情': []
             }
-            
-            # 1. 个股趋势判断
+            # ===== 1. 个股趋势（30分）=====
+            stock_ok = False
             if '均线排列' in data.columns and pd.notna(data.iloc[-1]['均线排列']):
                 if data.iloc[-1]['均线排列'] == 1:
-                    result['个股趋势'] = True
+                    stock_ok = True
                     result['详情'].append("个股均线多头排列")
-            
-            # 检查价格位置
             if 'MA20' in data.columns and '收盘价' in data.columns:
-                if pd.notna(data.iloc[-1]['MA20']) and pd.notna(data.iloc[-1]['收盘价']):
-                    if data.iloc[-1]['收盘价'] > data.iloc[-1]['MA20']:
-                        result['个股趋势'] = True
-                        result['详情'].append("股价运行在20日均线上方")
-            
-            if not result['个股趋势']:
+                if (pd.notna(data.iloc[-1]['MA20'])
+                        and pd.notna(data.iloc[-1]['收盘价'])
+                        and data.iloc[-1]['收盘价'] > data.iloc[-1]['MA20']):
+                    stock_ok = True
+                    result['详情'].append("股价运行在20日均线上方")
+            if not stock_ok:
                 result['详情'].append("个股趋势：均线未多头排列或股价在20日线下方")
-            
-            # 2. 行业趋势判断（使用外部传入的真实行业数据）
-            if industry_trend is True:
-                result['行业趋势'] = True
-                result['详情'].append("行业板块同步走强")
-            elif industry_trend is False:
-                result['行业趋势'] = False
-                result['详情'].append("行业板块走弱")
+            # 基础过滤（一票否决）
+            basic_passed = True
+            try:
+                basic_passed, _ = self.basic_filter(data)
+            except Exception:
+                basic_passed = False
+            result['个股趋势'] = stock_ok
+            individual_result = {'基础过滤': basic_passed, '均线多头': stock_ok}
+            # ===== 2. 行业趋势（25分，docs/3z.md 优化版）=====
+            if industry_data:
+                industry_result = self.resonance_analyzer.analyze_industry_trend(
+                    industry_data)
+                ind_trend = industry_result.get('整体趋势', '未知')
+                result['行业趋势'] = (ind_trend == '向上')
+                result['最强板块'] = industry_result.get('top_industries', [])
+                if result['最强板块']:
+                    result['详情'].append(
+                        f"最强板块: {result['最强板块'][:3]}")
+                result['详情'].append(industry_result.get('detail', ''))
             else:
-                result['行业趋势'] = False
-                result['详情'].append("行业趋势数据缺失")
+                if industry_trend is True:
+                    result['行业趋势'] = True
+                    result['详情'].append("行业板块同步走强")
+                elif industry_trend is False:
+                    result['详情'].append("行业板块走弱")
+                else:
+                    result['详情'].append("行业趋势数据缺失")
+                industry_result = {
+                    '整体趋势': '向上' if result['行业趋势'] else
+                    ('向下' if industry_trend is False else '未知'),
+                    'detail': '行业板块同步走强' if result['行业趋势']
+                    else '行业趋势数据缺失',
+                    'top_industries': []}
             
-            # 3. 大盘趋势判断（使用真实指数数据）
+            # ===== 3. 大盘趋势（25分，含位置评估）=====
+            index_data = None
+            index_name = None
             if market_data:
-                # 优先使用上证指数
-                index_name = '上证指数' if '上证指数' in market_data else (list(market_data.keys())[0] if market_data else None)
+                index_name = ('上证指数' if '上证指数' in market_data
+                              else (list(market_data.keys())[0]
+                                    if market_data else None))
                 if index_name:
                     index_data = market_data[index_name]
-                    if index_data is not None and not index_data.empty:
-                        # 计算指数MA20（若不存在）
-                        if 'MA20' not in index_data.columns and '收盘价' in index_data.columns:
-                            index_data = index_data.copy()
-                            index_data['MA20'] = index_data['收盘价'].rolling(20).mean()
-                            index_data['MA60'] = index_data['收盘价'].rolling(60).mean()
-                        
-                        latest_index = index_data.iloc[-1]
-                        if 'MA20' in index_data.columns and '收盘价' in index_data.columns:
-                            if (pd.notna(latest_index['MA20']) and pd.notna(latest_index['收盘价'])):
-                                if latest_index['收盘价'] > latest_index['MA20']:
-                                    result['大盘趋势'] = True
-                                    result['详情'].append(f"大盘({index_name})运行在20日均线上方")
-                                else:
-                                    result['详情'].append(f"大盘({index_name})运行在20日均线下方")
-                            else:
-                                result['详情'].append("大盘MA20数据不足")
+            if index_data is not None and not index_data.empty:
+                market_result = self.resonance_analyzer.analyze_market_trend(
+                    index_data)
+                mk_trend = market_result.get('趋势方向', '未知')
+                result['大盘趋势'] = (mk_trend == '向上')
+                result['大盘位置'] = market_result.get('position', '未知')
+                result['详情'].append(f"大盘{index_name} {mk_trend}"
+                                      f"（位置:{result['大盘位置']}）")
             else:
                 result['大盘趋势'] = False
                 result['详情'].append("大盘趋势数据缺失")
-            
-            # 4. 三级共振判断
-            if result['个股趋势'] and result['行业趋势'] and result['大盘趋势']:
-                result['三级共振'] = True
-                result['详情'].append("✅ 三级共振成立")
+                market_result = {'趋势方向': '未知', 'position': '未知',
+                                 '详情': []}
+            # ===== 4. 资金确认（20分，docs/3z.md 新增）=====
+            capital_result = self.resonance_analyzer.analyze_capital_flow(data)
+            result['资金活跃'] = capital_result.get('active', False)
+            if capital_result.get('detail'):
+                result['详情'].append(
+                    f"资金: {capital_result.get('detail')}"
+                    f"(得分{capital_result.get('score', 0)})")
+            # ===== 5. 四维共振评分 + 真三振判定（docs/3z.md）=====
+            resonance = self.resonance_analyzer.calculate_resonance_score(
+                individual_result=individual_result,
+                market_result=market_result,
+                industry_result=industry_result,
+                capital_result=capital_result)
+            result['共振评分'] = resonance.get('score', 0)
+            result['共振级别'] = resonance.get('level', '无共振')
+            result['共振建议'] = resonance.get('advice', '')
+            result['真三振'] = resonance.get('is_true_three_strike', False)
+            result['三级共振'] = bool(
+                result['个股趋势'] and result['行业趋势']
+                and result['大盘趋势'])
+            # 明细（供报告展示 WHY）
+            for d in resonance.get('details', []):
+                result['详情'].append(d)
+            if result['真三振']:
+                result['详情'].append("✅ 真三振（三级）成立：四维共振+资金活跃+大盘非高位")
+            elif result['三级共振']:
+                result['详情'].append("✅ 三级共振成立（未达真三振：资金/位置条件不足）")
             else:
-                result['详情'].append("❌ 三级共振不成立")
-            
-            self.logger.info(f"{'✅' if result['三级共振'] else '❌'} 三振共振分析: {result['详情']}")
+                result['详情'].append("❌ 三振共振不成立")
+            self.logger.info(f"{'✅' if result['真三振'] else '❌'} 三振共振: "
+                             f"评分{result['共振评分']}, 级别{result['共振级别']}")
             return result
-            
         except Exception as e:
             self.logger.error(f"❌ 三振共振分析异常: {e}")
-            return {'三级共振': False, '详情': [f"分析异常: {e}"]}
+            return {'三级共振': False, '共振评分': 0, '共振级别': '异常',
+                    '真三振': False, '详情': [f"分析异常: {e}"]}
     
     def main_bull_wave_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
         """

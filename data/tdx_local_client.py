@@ -59,13 +59,13 @@ class TdxLocalClient:
         self.reader = None
         self.login_success = False
         # 协议客户端（本地无数据时从行情服务器补充，docs/step2.md）
+        # 延迟初始化: mootdx Quotes.factory 会尝试连接行情服务器，服务器不可达时
+        # TCP超时可达15s+，阻塞 MarketDataClient 构造；改为首次真正需要时才连接，
+        # 失败一次后永久禁用（_protocol_disabled）。
+        self._protocol_cfg = config
         self.protocol_client = None
-        if config is not None:
-            try:
-                from tdx_protocol_client import TdxProtocolClient
-                self.protocol_client = TdxProtocolClient(config)
-            except Exception as e:
-                logger.warning(f"⚠️ 协议客户端初始化失败({str(e)[:80]})")
+        self._protocol_initialized = False
+        self._protocol_disabled = False
         # 本地 .day 读取器（自研 struct 解析，docs/step1.md TdxIncremental）
         # 说明: mootdx Reader 期望 {tdxdir}/vipdoc/{market}/lday/ 结构（多一层vipdoc），
         # 与本项目 tdx_vipdoc/{market}/lday/ 不匹配导致 reader.daily 恒为空；
@@ -79,8 +79,8 @@ class TdxLocalClient:
                 self.reader = Reader.factory(market='std', tdxdir=self.vipdoc_dir)
                 self.login_success = True
                 logger.info(f"📂 通达信本地数据源就绪: {self.vipdoc_dir}"
-                            + ("（含协议补充）" if self.protocol_client
-                               and self.protocol_client.available else ""))
+                            + ("（协议补充·延迟初始化）"
+                               if self._protocol_cfg is not None else ""))
             except Exception as e:
                 logger.warning(f"⚠️ 通达信本地数据源初始化失败({e})，"
                                f"将由备用源兜底")
@@ -140,25 +140,65 @@ class TdxLocalClient:
                 df = df[df['日期'] <= str(end_date)]
             df = df.sort_values('日期')
 
+        # 换手率补齐：.day 文件无换手率 → 从 SQLite 缓存按日期补（最新行 ffill 近似）
+        # 否则走 tdx_local 路径时换手率全 None，导致筹码集中度/换手率指标退化
+        if '换手率' in df.columns and df['换手率'].isna().all() \
+                and not df.empty and '日期' in df.columns:
+            try:
+                from db_manager import MysteryDB
+                db = MysteryDB()
+                cached = db.load_kline(
+                    f"{self._get_market(code)}.{code}", 'daily')
+                if not cached.empty and 'turn' in cached.columns:
+                    turn_map = dict(zip(cached['date'], cached['turn']))
+                    df['换手率'] = df['日期'].map(turn_map)
+                    df['换手率'] = df['换手率'].ffill()  # 缓存未覆盖的最新行用最近值
+            except Exception as e:
+                logger.debug(f"换手率补齐失败 {code}: {str(e)[:60]}")
+
         # 标准列输出
         for col in STANDARD_COLS:
             if col not in df.columns:
                 df[col] = None
         return df[STANDARD_COLS].copy()
 
+    def _get_protocol_client(self):
+        """延迟初始化协议客户端（首次调用时连接，失败一次永久禁用）"""
+        if self._protocol_disabled:
+            return None
+        if not self._protocol_initialized:
+            self._protocol_initialized = True
+            if self._protocol_cfg is None:
+                self._protocol_disabled = True
+                return None
+            try:
+                from tdx_protocol_client import TdxProtocolClient
+                self.protocol_client = TdxProtocolClient(self._protocol_cfg)
+            except Exception as e:
+                logger.warning(f"⚠️ 协议客户端初始化失败({str(e)[:80]})，"
+                               f"本会话禁用协议补充")
+                self._protocol_disabled = True
+                self.protocol_client = None
+        return self.protocol_client
+
     def _fetch_protocol(self, stock_code: str, start_date: str = None,
                         end_date: str = None) -> pd.DataFrame:
         """本地无数据时，用协议客户端从行情服务器获取（协议增量）"""
-        if self.protocol_client is None or not self.protocol_client.available:
+        client = self._get_protocol_client()
+        if client is None or not client.available:
             return pd.DataFrame(columns=STANDARD_COLS)
         if not start_date or not end_date:
             logger.debug("协议补充需提供 start_date/end_date，跳过")
             return pd.DataFrame(columns=STANDARD_COLS)
-        df = self.protocol_client.fetch_daily(
-            stock_code, start_date, end_date)
+        df = client.fetch_daily(stock_code, start_date, end_date)
         if not df.empty:
             logger.info(f"📡 [{stock_code}] 本地无数据，协议补充 "
                         f"{len(df)} 条（{start_date}~{end_date}）")
+        else:
+            # 连接成功但无数据 → 服务器可能不可达，禁用避免重复超时
+            logger.warning(f"⚠️ [{stock_code}] 协议补充为空，"
+                           f"本会话禁用协议补充")
+            self._protocol_disabled = True
         return df
 
     # ============ 财务数据（docs/step3.md 财务本地化） ============

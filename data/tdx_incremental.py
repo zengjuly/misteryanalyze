@@ -91,6 +91,32 @@ class TdxIncremental:
         return self._day_file_path(code) is not None
 
     # ============ 增量读取 ============
+    @staticmethod
+    def _find_start_offset(filepath: str, last_date: Optional[str]) -> int:
+        """
+        二分定位 last_date 之后的起始记录位置（定长32字节/条，按日期升序）
+        避免每次同步全量遍历 .day 文件（6000+条），增量场景只解析尾部几条
+        :return: 起始记录序号（0=全部）
+        """
+        size = os.path.getsize(filepath)
+        n = size // DAY_RECORD_SIZE
+        if n <= 0:
+            return 0
+        if not last_date:
+            return 0
+        target = int(str(last_date).replace('-', ''))
+        lo, hi = 0, n
+        with open(filepath, 'rb') as f:
+            while lo < hi:
+                mid = (lo + hi) // 2
+                f.seek(mid * DAY_RECORD_SIZE)
+                date_int, = struct.unpack('<I', f.read(4))
+                if date_int <= target:
+                    lo = mid + 1
+                else:
+                    hi = mid
+        return lo
+
     def _read_day_file_tail(self, code: str,
                             last_date: Optional[str]) -> pd.DataFrame:
         """
@@ -103,9 +129,13 @@ class TdxIncremental:
         if not filepath:
             return pd.DataFrame()
 
+        # 二分定位起始位置（增量场景只解析尾部，避免全量遍历）
+        start = self._find_start_offset(filepath, last_date)
+
         records = []
         try:
             with open(filepath, 'rb') as f:
+                f.seek(start * DAY_RECORD_SIZE)
                 while True:
                     chunk = f.read(DAY_RECORD_SIZE)
                     if not chunk or len(chunk) < DAY_RECORD_SIZE:
@@ -116,12 +146,10 @@ class TdxIncremental:
                     # 过滤无效/异常记录
                     if date_str == '0' or date_str < '19900101':
                         continue
-                    trade_date = datetime.strptime(
-                        date_str, '%Y%m%d').strftime('%Y-%m-%d')
-                    if last_date and trade_date <= last_date:
-                        continue  # 只取新数据
+                    if last_date and date_str <= str(last_date).replace('-', ''):
+                        continue  # 二分边界容错（日期格式差异）
                     records.append({
-                        '日期': trade_date,
+                        '日期': f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}",
                         '代码': code,
                         '开盘价': open_ / 100.0,
                         '最高价': high / 100.0,

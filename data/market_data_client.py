@@ -198,6 +198,15 @@ class MarketDataClient:
             cached = self.db.load_kline(db_code, 'daily')
             cached_cn = self._to_cn_columns(cached)
 
+            # 缓存质量检查: 换手率全 None 的缓存视为无效锚点
+            # （历史 sync 走 tdx_local 无换手率字段写入的脏数据，无法 ffill 修复）
+            # → 回退在线源（akshare/baostock 含换手率）并自动重写缓存
+            if not cached_cn.empty and '换手率' in cached_cn.columns \
+                    and cached_cn['换手率'].notna().sum() == 0:
+                logger.warning(f"⚠️ [{code}] 缓存换手率全None(脏锚点)，"
+                               f"回退在线源修复")
+                return None
+
             if delta.empty:
                 # 本地无新数据 → 直接返回缓存（毫秒级，零网络）
                 if not cached_cn.empty:
@@ -312,6 +321,16 @@ class MarketDataClient:
                     df = self._fetch_from_source(src, code, period, start_date, end_date)
                     latency = (time.time() - start_time) * 1000
                     if df is not None and not df.empty:
+                        # 换手率完整性检查: tdx_local(.day 无换手率字段)返回全None且
+                        # 缓存补齐失败时，该数据会退化筹码集中度/资金维度分析(3z)
+                        # → 视为无效，切换到在线源（akshare/baostock 含换手率）
+                        if (src == 'tdx_local' and '换手率' in df.columns
+                                and df['换手率'].notna().sum() == 0):
+                            self.source_health.record(src, True, latency)
+                            last_error = RuntimeError(f"{src} 换手率全None")
+                            logger.info(f"[tdx_local] {code} {period} 换手率全None，"
+                                        f"切换在线源补充")
+                            continue
                         # 成功：记录健康分
                         self.source_health.record(src, True, latency)
                         # 统一列名标准化（不同源可能返回 date/日期 差异）
@@ -334,6 +353,18 @@ class MarketDataClient:
                     latency = (time.time() - start_time) * 1000
                     # 失败：记录健康分（连续失败达到阈值触发熔断）
                     self.source_health.record(src, False, latency)
+                    # akshare 源不可达（连接被拒/断连）重试无意义 → 快速切换下一源，
+                    # 避免每只股票烧 2+4+8=14s 重试（.day缺失时尤甚）
+                    err_str = str(e)
+                    if src == 'akshare' and any(
+                            k in err_str for k in ['RemoteDisconnected',
+                                                   'Connection aborted',
+                                                   'Connection refused',
+                                                   'Max retries']):
+                        logger.warning(f"[akshare] {code} {period} 源不可达"
+                                       f"({err_str[:60]})，快速切换下一源")
+                        switched_fast = True
+                        break
                     wait = self.retry_delay * (2 ** attempt)
                     logger.warning(f"[{src}] {code} {period} 第{attempt+1}次失败: "
                                    f"{str(e)[:100]}，{wait:.1f}s后重试")

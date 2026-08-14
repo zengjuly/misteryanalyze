@@ -284,11 +284,17 @@ class MysteryDB:
         with self._lock:
             conn = self._connect()
             try:
+                # 快速路径: 行数未超限时无需裁剪（避免每次同步都执行大DELETE解析）
+                cnt = conn.execute(
+                    "SELECT COUNT(*) FROM stock_kline_data "
+                    "WHERE code=? AND period=?", (code, period)).fetchone()[0]
+                if cnt <= max_rows:
+                    return 0
                 # 找出应保留的最新 max_rows 条日期
                 keep_dates = conn.execute(
-                    """SELECT date FROM stock_kline_data
-                       WHERE code=? AND period=?
-                       ORDER BY date DESC LIMIT ?""",
+                    "SELECT date FROM stock_kline_data "
+                    "WHERE code=? AND period=?"
+                    "ORDER BY date DESC LIMIT ?",
                     (code, period, max_rows)).fetchall()
                 if not keep_dates:
                     return 0

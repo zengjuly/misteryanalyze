@@ -406,6 +406,71 @@ class StockAnalysisSystem:
         except Exception as e:
             self.logger.warning(f"⚠️ 行业趋势分析异常 {stock_code}: {e}")
         return result
+
+    def _build_industry_kline_map(self, industry_map: Dict,
+                                  processed_data: Dict,
+                                  max_industries: int = 12,
+                                  max_samples: int = 3) -> Dict[str, pd.DataFrame]:
+        """
+        构建行业平均K线map（docs/3z.md 优化行业趋势用）
+        每个行业取样本股票，对齐日期后平均 收盘价/成交额 → {行业名: DataFrame}
+        :param industry_map: {'code_map':..., 'industry_codes':...}
+        :param processed_data: 已获取的股票数据 {code: {'daily': DataFrame}}
+        :param max_industries: 最多构建的行业数（按样本量排序取前N）
+        :param max_samples: 每个行业抽样股票数
+        :return: {行业名: DataFrame(日期/收盘价/成交额)}
+        """
+        result_map = {}
+        try:
+            industry_codes = industry_map.get('industry_codes', {})
+            # 按样本量排序取前N个行业
+            industries = sorted(industry_codes.items(),
+                                key=lambda kv: len(kv[1]), reverse=True)
+            for industry, codes in industries[:max_industries]:
+                peers = codes[:max_samples]
+                series = []
+                for peer in peers:
+                    peer_short = peer.replace('.', '')
+                    daily = None
+                    pd_data = processed_data.get(peer_short, {})
+                    if isinstance(pd_data, dict):
+                        daily = pd_data.get('daily')
+                    if daily is None or daily.empty:
+                        continue
+                    d = daily[['日期', '收盘价']].copy()
+                    if '成交额' in daily.columns:
+                        d['成交额'] = daily['成交额']
+                    else:
+                        d['成交额'] = 0.0
+                    d['日期'] = pd.to_datetime(d['日期'])
+                    d = d.drop_duplicates(subset=['日期'], keep='last')
+                    d = d.set_index('日期')
+                    series.append(d)
+                if len(series) < 2:
+                    continue
+                # 对齐日期后平均
+                merged = series[0]
+                for s in series[1:]:
+                    merged = merged.join(s, how='outer', rsuffix='_x')
+                close_cols = [c for c in merged.columns if c == '收盘价']
+                amount_cols = [c for c in merged.columns if c == '成交额']
+                if not close_cols:
+                    continue
+                out = pd.DataFrame(index=merged.index)
+                out['收盘价'] = merged[close_cols].mean(axis=1)
+                out['成交额'] = (merged[amount_cols].mean(axis=1)
+                                 if amount_cols else 0.0)
+                out = out.dropna(subset=['收盘价']).sort_index()
+                out = out.reset_index().rename(columns={'index': '日期'})
+                out['日期'] = out['日期'].dt.strftime('%Y-%m-%d')
+                if len(out) >= 5:
+                    result_map[industry] = out
+            if result_map:
+                self.logger.info(f"🏢 构建行业K线map: {len(result_map)} 个行业")
+            return result_map
+        except Exception as e:
+            self.logger.warning(f"⚠️ 构建行业K线map异常: {e}")
+            return result_map
     
     def _analyze_multi_period(self, processed_data: Dict) -> Dict:
         """
@@ -563,6 +628,15 @@ class StockAnalysisSystem:
             industry_trend_map = industry_trend_map or {}
             multi_period_map = multi_period_map or {}
             
+            # 行业平均K线map（docs/3z.md 优化行业趋势：涨幅+资金+数量评分）
+            industry_kline_map = {}
+            try:
+                if industry_map.get('industry_codes'):
+                    industry_kline_map = self._build_industry_kline_map(
+                        industry_map, processed_data)
+            except Exception as e:
+                self.logger.warning(f"⚠️ 行业K线map构建失败: {e}")
+            
             for stock_code, indicators in indicators_data.items():
                 # 获取对应的数据
                 stock_data = processed_data.get(stock_code, {})
@@ -585,9 +659,14 @@ class StockAnalysisSystem:
                 industry_pct_20d = industry_info.get('近20日')
                 industry_samples = industry_info.get('样本股票', [])
                 
-                # 三振共振分析（真实大盘指数 + 真实行业趋势）
+                # 三振共振分析（docs/3z.md 四维共振：个股+大盘+行业+资金）
+                stock_industry = industry_info.get('行业', '未知')
+                stock_industry_data = None
+                if stock_industry in industry_kline_map:
+                    stock_industry_data = {stock_industry: industry_kline_map[stock_industry]}
                 resonance_analysis = self.mystery_logic.three_resonance_analysis(
-                    indicators, market_data, industry_trend)
+                    indicators, market_data, industry_trend,
+                    industry_data=stock_industry_data)
                 
                 # 主升浪分析
                 bull_wave_analysis = self.mystery_logic.main_bull_wave_analysis(indicators)
@@ -633,6 +712,13 @@ class StockAnalysisSystem:
                     '基础过滤排除原因': basic_errors if not basic_passed else [],  # 排除原因（供报告明确展示）
                     '三振共振': resonance_analysis.get('三级共振', False),
                     '三振共振详情': resonance_analysis.get('详情', []),
+                    '共振评分': resonance_analysis.get('共振评分', 0),
+                    '共振级别': resonance_analysis.get('共振级别', '无共振'),
+                    '共振建议': resonance_analysis.get('共振建议', ''),
+                    '真三振': resonance_analysis.get('真三振', False),
+                    '资金活跃': resonance_analysis.get('资金活跃', False),
+                    '最强板块': resonance_analysis.get('最强板块', []),
+                    '大盘位置': resonance_analysis.get('大盘位置', '未知'),
                     '个股趋势': resonance_analysis.get('个股趋势', False),
                     '行业趋势': resonance_analysis.get('行业趋势', False),
                     '大盘趋势': resonance_analysis.get('大盘趋势', False),
@@ -828,6 +914,15 @@ class StockAnalysisSystem:
                     print(f"   📋 板块样本: {', '.join(map(str, analysis.get('板块样本', [])[:3]))}")
                 print(f"📊 大盘趋势: {'✅ 走强' if analysis.get('大盘趋势', False) else '❌ 走弱'}")
                 print(f"🎯 三振共振: {'✅ 成立' if analysis.get('三振共振', False) else '❌ 不成立'}")
+                print(f"   🔢 四维共振评分: {analysis.get('共振评分', 0)} "
+                      f"| 级别: {analysis.get('共振级别', '无共振')} "
+                      f"| 大盘位置: {analysis.get('大盘位置', '未知')}")
+                print(f"   💰 资金活跃: {'✅' if analysis.get('资金活跃', False) else '❌'} "
+                      f"| 最强板块: {', '.join(map(str, analysis.get('最强板块', [])[:3])) or '无'}")
+                if analysis.get('真三振', False):
+                    print(f"   🚀 真三振（三级）: ✅ {analysis.get('共振建议', '')}")
+                elif analysis.get('共振建议'):
+                    print(f"   💡 {analysis.get('共振建议', '')}")
                 
                 print("\n📅 多周期分析:")
                 print(f"📊 周线: {analysis.get('周线趋势', '未知')} (最新价: {analysis.get('周线最新价', '-')}, MA20: {analysis.get('周线MA20', '-')})")

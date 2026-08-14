@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.9.0
+- **版本**: 1.10.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-14
 - **文档类型**: 系统设计文档
@@ -275,27 +275,47 @@ class ExceptionHandler:
 
 ---
 
-### 3.3 三振共振分析（three_resonance_analysis）— 个股+行业+大盘
+### 3.3 三振共振分析（three_resonance_analysis）— 四维共振评分 ★★（docs/3z.md）
 
-三振共振 = 个股趋势 ∧ 行业趋势 ∧ 大盘趋势，三者同时向上才成立。
+三振共振 = 个股30 + 大盘25 + 行业25 + 资金20 = 100 分（docs/3z.md 优化版），
+真三振（三级）= 四维全部向好 + 资金活跃 + 大盘非高位。
 
-**① 个股趋势**（满足任一即 True）：
-- `均线排列 == 1`（多头排列）
-- 或 `收盘价 > MA20`（股价站上20日线）
+**① 个股趋势（30分）**：
+- `基础过滤` 通过 且 `均线多头`（均线排列==1 或 收盘价>MA20）→ +30
 
-**② 行业趋势**（由 main.py `_analyze_industry_trend` 外部计算，非本方法内部）：
-- 从行业分类表取同行业股票（排除自身，最多抽样 3 只）
-- 对每只样本取**近 5 个交易日涨跌幅**均值，再对样本取平均得 `avg_pct`
-- `行业趋势 = avg_pct > 0`
-- 附带板块评级（见 3.9）
+**② 大盘趋势（25分，含位置评估）**：
+- `analyze_market_trend`：收盘>MA20 且 >MA60 → 向上（+25）；<MA20 且 <MA60 → 向下；否则震荡
+- 趋势强度 = 近20日涨幅绝对值（min 100）
+- **位置评估**：近120日 `(close-low)/(high-low)`，≥85% 高位 / ≤15% 低位 / 其余中位
+- **高位惩罚**：position==高位 → 总分 -15
 
-**③ 大盘趋势**：
-- 取上证指数（或首个可用指数）日线，计算 `MA20`（若缺失则 rolling(20).mean() 现算）
-- `大盘趋势 = 指数收盘价 > 指数MA20`
+**③ 行业趋势（25分，docs/3z.md 优化版）**：
+- `analyze_industry_trend({行业名: DataFrame})`，每行业评分（-2~+3）：
+  - `bias` = 最新收盘 vs MA20 偏离%；`change_n` = 近10日涨幅（持续性）；`amount_score` = 成交额放大（最新 vs 前5日均额 ≥1.5倍 → +1）
+  - 评分：`bias<-5→-2`；`bias<-2→-1`；`bias>5 且 change_n>3→2+amount`；`bias>2 且 change_n>0→1+amount`；否则 0
+    （⚠️ 远端分支必须先判断，`bias<-5` 若放在 `bias<-2` 之后将永远不可达）
+  - 强势 = score≥2；弱势 = score≤-2；中性 = 其余
+- 整体趋势：`强势数 ≥ 弱势数+2 且 强势数 ≥ max(3, 总数×25%)` → 向上（+25）；反向 → 向下；否则震荡
+  （数量阈值过滤"个别行业脉冲"）
+- **最强板块**：score≥2 按 (score, change_n) 降序前5 → `top_industries`（报告展示）
+- 行业数据来自 main.py `_build_industry_kline_map`：行业样本股票对齐日期后平均收盘价/成交额
+  （无行业 DataFrame 时降级用外部 bool industry_trend）
 
-**④ 三级共振**：`个股 ∧ 行业 ∧ 大盘` 全部为 True。
+**④ 资金确认（20分，新增）**：
+- `analyze_capital_flow(data)`：量比（最新量/前5日均量）≥1.8→+12、≥1.5→+8；
+  成交额比 ≥1.6→+5；换手率 ≥3%→+3；满分20
+- `active = score≥8 或 量比≥1.5`
 
-返回：`{个股趋势, 行业趋势, 大盘趋势, 三级共振, 详情}`
+**⑤ 定级（calculate_resonance_score）**：
+- **真三振（三级）**：score≥85 且 资金活跃 且 大盘/行业向上 且 个股OK
+  （建议：强烈建议关注，大资金跨层级共振）
+- 二级共振 ≥70 / 一级共振 ≥45 / 无共振 <45
+- 返回兼容旧字段（个股共振/市场共振/行业共振/总共振评分/共振级别）+
+  新字段（score/level/advice/is_true_three_strike/details/capital_active/
+  industry_top/market_position）
+
+返回（three_resonance_analysis 合并后）：`{个股趋势, 行业趋势, 大盘趋势, 三级共振,
+共振评分, 共振级别, 共振建议, 资金活跃, 最强板块, 大盘位置, 真三振, 详情}`
 
 ---
 
@@ -929,6 +949,39 @@ data_source:
 **⑥ 重采样日历过滤再升级**（kline_resampler.py）：
 - 规则细化：保留"日历中日期 ∪ 日历最大日期之后的工作日"（pandas 3.0 用 `dt.dayofweek`），
   无日历时仅剔除周末——既支持增量最新交易日，也剔除混入的周末数据
+
+**⑧ 换手率完整性修复（数据质量，3z 资金维度依赖换手率）**：
+- 问题：.day 文件无换手率字段；历史 sync 走 tdx_local 写入的缓存存在大量 `turn IS NULL` 行
+  （全库 16万行/718只，config 18只中 8 只全 None）→ 分析退化：换手率 0.00%、
+  筹码集中度未知、自适应周期 N=30 退化、三振资金维度失效
+- 四层防御：
+  1. `tdx_local_client.get_daily_data`：本地数据换手率全 None → 从 db 缓存按日期补齐 + ffill
+  2. `data_engine.get_kline`：upsert 前 turn ffill（防未来污染）
+  3. `_fetch_with_incremental`：缓存换手率全 None（脏锚点，无法 ffill）→ 回退在线源
+  4. `_fetch_with_fallback`：tdx_local 返回换手率全 None → 视为无效，切换 akshare/baostock
+- 存量修复：在线源重写脏缓存（验证 8/8 修复，600519 换手率 0.24%/筹码集中度高度集中）
+
+**⑦ 全市场同步性能优化（实战提速 1.9小时 → ~12分钟）**：
+- **根因修复**：sync_all_market 原来 `MysteryDataEngine()` 未传 config → 无 market_client →
+  纯 baostock 单源网络拉取（每只1-3秒）。改为 `MysteryDataEngine(config=cfg)` 启用
+  tdx_local 双源退避 + 增量路径（本地毫秒级）
+- **协议客户端延迟初始化**（tdx_local_client）：mootdx Quotes.factory 连接不可达行情服务器
+  时 TCP 超时 15s+，阻塞 MarketDataClient 构造（每次同步 16s 固定开销）→ 首次真正需要时才
+  连接，失败一次本会话禁用（_protocol_disabled）
+- **证券列表缓存跳过**（get_all_a_shares）：本地已有 ≥1000 只时跳过 query_stock_basic
+  全市场网络拉取（省 30s+）
+- **增量写入只写变化行**（data_engine 双源分支）：date 不在缓存中的增量行才 upsert，
+  避免"增量0条全量重写数百行/增量1条重写全部"（全市场同步最大开销）
+- **.day 二分定位**（tdx_incremental）：定长 32 字节记录按日期升序 → 二分定位 last_date
+  之后起始位置，增量场景只解析尾部几条（不再全量遍历 6000+ 条）；去掉 datetime.strptime
+- **无缓存写前截断**（data_engine）：全量写入前 tail(max_rows)，避免写 6000 行再 trim 删 4000
+- **trim 快速路径**（db_manager）：COUNT ≤ max_rows 直接返回，避免每次同步执行大 DELETE 解析
+- **logging force=True**（sync_all_market）：覆盖其他模块 import 时的 root handler 配置，
+  保证 INFO 进度/数据源日志可见
+- 实测：单只增量 0.02-0.13s；500 只 65s；1000 只 144s（8线程）→ 全量 5208 只约 12 分钟
+  （首次建缓存）；每日增量同步（缓存已有）更快
+- 线程策略：主源 tdx_local 本地读取可 8 线程（sync.threads.tdx_local=8）；baostock 兜底
+  有全局锁保护（sync.threads.baostock=1）；实测 1/8 线程差异不大（受 SQLite 锁/GIL 限制）
 
 ## 5. 接口设计
 

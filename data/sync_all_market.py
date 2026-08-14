@@ -36,17 +36,31 @@ from data_engine import MysteryDataEngine, DEFAULT_LOOKBACK_DAYS
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
-    datefmt='%H:%M:%S')
+    datefmt='%H:%M:%S',
+    force=True)  # force=True: 覆盖其他模块import时设置的root handler，保证INFO可见
 logger = logging.getLogger('sync_all_market')
 
 
-def get_all_a_shares(engine: MysteryDataEngine, include_index: bool = False) -> list:
+def get_all_a_shares(engine: MysteryDataEngine, include_index: bool = False,
+                     skip_sync_if_cached: bool = True) -> list:
     """
     动态获取市场所有A股代码列表
     :param engine: 数据引擎
     :param include_index: 是否包含指数
+    :param skip_sync_if_cached: 本地证券列表已有足够股票时跳过网络同步
+        （query_stock_basic 全市场拉取耗时30s+，缓存存在时无必要重复）
     :return: 股票代码列表（9位格式 sh.600150）
     """
+    if skip_sync_if_cached:
+        # 本地已有足够股票列表 → 直接使用（避免每次同步都拉全市场）
+        cached = engine.db.get_stock_info(stock_only=not include_index,
+                                          listed_only=True)
+        if cached is not None and len(cached) >= 1000:
+            codes = cached['code'].tolist()
+            logger.info(f"📋 使用本地证券列表缓存 {len(codes)} 只"
+                        f"（跳过网络同步）")
+            return codes
+
     # 同步全市场证券列表到缓存
     n = engine.sync_stock_list(include_index=include_index)
     if n == 0:
@@ -142,20 +156,25 @@ def sync_all_market(periods: list = None, days: int = None,
     :param progress_bar: 是否显示tqdm进度条
     """
     start_time = time.time()
-    engine = MysteryDataEngine()
+    cfg = _load_config()
+    # 关键: 必须传 config 启用双源退避（tdx_local 本地优先 + 增量路径），
+    # 否则 MysteryDataEngine 无 market_client → 纯 baostock 网络拉取（全市场极慢）
+    engine = MysteryDataEngine(config=cfg)
     if periods is None:
         periods = ['daily']
     if days is None:
         days = DEFAULT_LOOKBACK_DAYS.get(periods[0], 1100)
 
-    # 配置化线程（config.yaml sync.threads，按数据源类型）
+    # 配置化线程（config.yaml sync.threads，按主数据源类型）
     if threads is None:
-        cfg = _load_config()
         sync_cfg = (cfg.get('sync') or {}).get('threads') or {}
-        # 同步主路径走数据引擎(baostock全局锁) → 取 baostock 线程配置
-        threads = int(sync_cfg.get('baostock', 1))
+        # 主源决定线程数: tdx_local 本地读取可多线程; baostock 全局单socket必须1
+        primary = 'baostock'
+        if engine.market_client is not None and engine.market_client.source_order:
+            primary = engine.market_client.source_order[0]
+        threads = int(sync_cfg.get(primary, sync_cfg.get('baostock', 1)))
         threads = max(1, threads)
-        logger.info(f"⚙️ 线程数来自配置 sync.threads.baostock = {threads}")
+        logger.info(f"⚙️ 线程数来自配置 sync.threads.{primary} = {threads}")
 
     # 1. 获取全市场股票
     codes = get_all_a_shares(engine, include_index=include_index)
