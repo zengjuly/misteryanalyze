@@ -62,8 +62,16 @@ def _run_scan(codes):
                 name = BaostockClient().get_stock_name(code)
             except Exception:
                 pass
+            # 行业板块（docs/ui2.md 扫描结果显示板块）
+            industry = ''
+            try:
+                db_code = code[:2] + '.' + code[2:] if '.' not in code else code
+                ind_map = feeder.get_industry_data()
+                industry = ind_map.get('code_map', {}).get(db_code, '')
+            except Exception:
+                pass
             results.append({
-                '股票代码': code, '股票名称': name,
+                '股票代码': code, '股票名称': name, '行业板块': industry,
                 '综合评分': signal.get('综合评分', 0),
                 '真三振': signal.get('真三振', False),
                 '主升浪信号': signal.get('主升浪信号', False),
@@ -86,7 +94,7 @@ with st.sidebar:
     only_true = st.checkbox("只看真三振", value=False)
     only_main = st.checkbox("只看主升浪", value=False)
     min_score = st.slider("评分阈值", 0, 100, 85)
-    # 股票池选择器（docs/ui2.md 全局股票池）
+    # 股票池选择器（docs/ui2.md 全局股票池 + 指定板块）
     from web.utils.session import load_watchlist
     watchlist = load_watchlist()
     pool_options = ["全市场A股", "核心自选池"] + \
@@ -101,6 +109,22 @@ with st.sidebar:
             st.warning("自选股为空，请先在「真三振池」页添加")
     else:
         selected = st.multiselect("选择股票", stock_pool, default=stock_pool[:5])
+    # 指定板块筛选（docs/ui2.md: 通达信行业板块）
+    try:
+        ind_map = get_feeder().get_industry_data()
+        ind_codes = ind_map.get('industry_codes', {})
+        industry_names = list(ind_codes.keys())
+    except Exception:
+        ind_codes, industry_names = {}, []
+    if industry_names:
+        sel_industry = st.selectbox("指定板块（可选，按行业板块筛选）",
+                                    ["全部板块"] + industry_names)
+        if sel_industry != "全部板块":
+            selected = [c.replace('.', '') for c in ind_codes[sel_industry]]
+            st.caption(f"📊 已指定板块: {sel_industry} "
+                       f"（{len(selected)} 只成分股）")
+    else:
+        st.caption("行业板块数据不可用（可先打开板块监控页触发填充）")
 
 if st.button("🚀 开始扫描", type="primary", use_container_width=True):
     if scope == "核心自选池" and not (watchlist or selected):

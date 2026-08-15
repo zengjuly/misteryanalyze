@@ -64,9 +64,7 @@ with c2:
     if pool_sel:
         selected = pool_sel
 
-period = st.radio("K线周期", ["日线", "周线", "月线"], horizontal=True)
-
-if st.button("🚀 开始分析", type="primary", use_container_width=True):
+if st.button("🚀 开始分析", type="primary", width="stretch"):
     if not selected:
         st.warning("请选择或输入股票代码")
         st.stop()
@@ -104,6 +102,16 @@ if st.button("🚀 开始分析", type="primary", use_container_width=True):
 
             st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
 
+            # 所属板块（docs/ui2.md: 支持分析板块）
+            industry_name = '未知'
+            try:
+                ind_map = feeder.get_industry_data()
+                cm = ind_map.get('code_map', {})
+                industry_name = cm.get(db_code, cm.get(code, '未知'))
+            except Exception:
+                pass
+            st.info(f"🏢 所属板块: **{industry_name}**")
+
             # ---------- 1. 评分卡片 ----------
             st.subheader("🎯 评分概览")
             render_metric_cards(signal)
@@ -112,24 +120,30 @@ if st.button("🚀 开始分析", type="primary", use_container_width=True):
             st.subheader("💡 操作建议")
             render_advice(signal)
 
-            # ---------- 2. 财务数据（docs/ui2.md） ----------
+            # ---------- 2. 财务数据（docs/ui2.md, 无缓存自动拉取） ----------
             st.subheader("💰 财务数据")
             try:
                 from financial_storage import FinancialStorage
                 fs = FinancialStorage(db)
-                fi = fs.load_latest(db_code) or {}
-                f1, f2, f3, f4 = st.columns(4)
-                f1.metric("PE", fi.get('PE', 'N/A'))
-                f2.metric("PB", fi.get('PB', 'N/A'))
-                f3.metric("股息率",
-                          f"{fi.get('股息率', 0):.2f}%" if fi.get('股息率') is not None else 'N/A')
-                f4.metric("最新ROE",
-                          f"{fi.get('ROE', 0):.2f}%" if fi.get('ROE') is not None else 'N/A')
-                hist = fs.load_history(db_code, limit=8)
-                if hist is not None and not hist.empty:
-                    with st.expander("📊 近三年 ROE 历史"):
-                        roe_df = hist[['报告期', 'ROE']].dropna().tail(8)
-                        st.dataframe(roe_df, width="stretch")
+                fi = fs.ensure_financial(db_code)
+                if fi:
+                    f1, f2, f3, f4 = st.columns(4)
+                    f1.metric("PE", fi.get('PE', 'N/A'))
+                    f2.metric("PB", fi.get('PB', 'N/A'))
+                    f3.metric("股息率",
+                              f"{fi.get('股息率', 0):.2f}%" if fi.get('股息率') is not None else 'N/A')
+                    f4.metric("最新ROE",
+                              f"{fi.get('ROE', 0):.2f}%" if fi.get('ROE') is not None else 'N/A')
+                    if fi.get('报告期'):
+                        st.caption(f"报告期: {fi.get('报告期')}")
+                    hist = fs.load_history(db_code, limit=8)
+                    if hist is not None and not hist.empty:
+                        with st.expander("📊 近三年 ROE 历史"):
+                            roe_df = hist[['报告期', 'roe']].dropna().tail(8)
+                            roe_df.columns = ['报告期', 'ROE']
+                            st.dataframe(roe_df, width="stretch")
+                else:
+                    st.warning("财务数据获取失败（在线源不可用）")
             except Exception as e:
                 st.warning(f"财务数据获取失败: {e}")
 
@@ -175,26 +189,47 @@ if st.button("🚀 开始分析", type="primary", use_container_width=True):
                 st.markdown(f"**月线箱体**（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
                             f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
 
-            # ---------- 4. K线图（周期切换 + MACD + 震荡区间） ----------
-            st.subheader("📊 K线图（MACD + 震荡区间）")
-            box = None
-            if period == "日线":
-                kdf = daily.tail(150)
-                box = {'上沿': float(daily['最高价'].tail(20).max()),
+            # ---------- 4. K线图（一次分析完成日/周/月K，docs/ui2.md） ----------
+            st.subheader("📊 K线图（MACD + 震荡区间，日/周/月一次完成）")
+            from indicators.ma_indicators import MAIndicators
+
+            def _prep_kline(kdf, box_dict):
+                """补均线 + 绘制"""
+                kdf = kdf.copy()
+                if 'MA5' not in kdf.columns:
+                    kdf = MAIndicators().calculate_ma(kdf)
+                return plot_kline(kdf, title=f"{code} {name}", box=box_dict)
+
+            # 日K箱体（近20日震荡区间）
+            day_box = {'上沿': float(daily['最高价'].tail(20).max()),
                        '下沿': float(daily['最低价'].tail(20).min()),
                        'POC': ap.get('POC') if 'ap' in dir() else None}
-            elif period == "周线":
-                kdf = wk.tail(80) if wk is not None and len(wk) else daily.tail(80)
-                box = {'上沿': w_hi, '下沿': w_lo}
-            else:
-                kdf = mo.tail(48) if mo is not None and len(mo) else daily.tail(48)
-                box = {'上沿': m_hi, '下沿': m_lo}
-            # 补均线（重采样后可能缺失）
-            from indicators.ma_indicators import MAIndicators
-            if 'MA5' not in kdf.columns:
-                kdf = MAIndicators().calculate_ma(kdf)
-            fig = plot_kline(kdf, title=f"{code} {name} {period}", box=box)
-            st.plotly_chart(fig, width="stretch")
+            tab_d, tab_w, tab_m = st.tabs(["📅 日线", "📆 周线", "🗓️ 月线"])
+            with tab_d:
+                st.plotly_chart(_prep_kline(daily.tail(150), day_box),
+                                width="stretch")
+            with tab_w:
+                if wk is not None and len(wk):
+                    w_hi = float(wk['最高价'].tail(20).max())
+                    w_lo = float(wk['最低价'].tail(20).min())
+                    st.plotly_chart(_prep_kline(wk.tail(80),
+                                                {'上沿': w_hi, '下沿': w_lo}),
+                                    width="stretch")
+                    st.caption(f"周线箱体（近20周）: {w_lo:.2f} ~ {w_hi:.2f} "
+                               f"| 最新 {wk['收盘价'].iloc[-1]:.2f}")
+                else:
+                    st.info("周线数据不足")
+            with tab_m:
+                if mo is not None and len(mo):
+                    m_hi = float(mo['最高价'].tail(12).max())
+                    m_lo = float(mo['最低价'].tail(12).min())
+                    st.plotly_chart(_prep_kline(mo.tail(48),
+                                                {'上沿': m_hi, '下沿': m_lo}),
+                                    width="stretch")
+                    st.caption(f"月线箱体（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
+                               f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
+                else:
+                    st.info("月线数据不足")
 
             # ---------- 5. 分析详情 ----------
             st.subheader("📋 触发条件明细")

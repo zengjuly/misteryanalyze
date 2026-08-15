@@ -118,6 +118,53 @@ class FinancialStorage:
         """该股票是否有本地财务缓存"""
         return not self.db.load_financial(code, limit=1).empty
 
+    def ensure_financial(self, code: str, client=None) -> Dict:
+        """确保财务数据可用：无缓存时从在线源拉取并缓存（docs/ui2.md 财务展示）
+        :param code: sh.600150
+        :param client: 数据客户端（MultiSourceClient/BaostockClient，需有
+                       get_financial_data 方法；None 时尝试多源客户端）
+        :return: 最新财务 dict（{报告期/ROE/EPS/PE/PB/股息率/...}），失败返回 {}
+        """
+        fi = self.load_latest(code)
+        # 缓存有效（报告期+核心指标有值）才复用；全 None 视为脏缓存重新拉取
+        if fi and (fi.get('报告期') or fi.get('ROE') is not None
+                   or fi.get('EPS') is not None):
+            return fi
+        try:
+            if client is None:
+                # 延迟导入避免循环依赖
+                import yaml
+                import os
+                from multi_source_client import MultiSourceClient
+                cfg_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'config', 'config.yaml')
+                with open(cfg_path, encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f)
+                client = MultiSourceClient(cfg)
+            # baostock 接口需要登录上下文（user_id），否则返回全 None
+            if not getattr(client, 'login_success', False):
+                client.login()
+            code6 = code.replace('.', '')
+            # 当前股价（PE/PB/股息率计算需要，main.py 同逻辑：取日K最新收盘）
+            current_price = None
+            try:
+                kdf = self.db.load_kline(code, 'daily')
+                if kdf is not None and not kdf.empty:
+                    current_price = float(kdf['close'].iloc[-1])
+            except Exception:
+                pass
+            data = client.get_financial_data(code6, current_price)
+            if not data:
+                return {}
+            self.save_financial(code, data)
+            return self.load_latest(code)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"⚠️ ensure_financial({code}) 失败: {str(e)[:80]}")
+            return {}
+
     # ============ 本地数据源状态 ============
     @staticmethod
     def list_gpcw_files(vipdoc_dir: str) -> List[str]:

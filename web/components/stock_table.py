@@ -14,7 +14,7 @@ def render_stock_table(results: list, show_export: bool = True):
         return
     df = pd.DataFrame(results)
     # 统一列名
-    cols = ['股票代码', '股票名称', '综合评分', '真三振', '主升浪信号',
+    cols = ['股票代码', '股票名称', '行业板块', '综合评分', '真三振', '主升浪信号',
             '资金活跃', '操作建议', '共振级别']
     cols = [c for c in cols if c in df.columns]
     show = df[cols] if cols else df

@@ -527,7 +527,7 @@ streamlit run web/app.py --server.port 1888 --server.headless true
 
 ## 版本信息
 
-- **版本**: 1.13.0
+- **版本**: 1.13.1
 - **作者**: Mystery Team
 - **更新时间**: 2026-08-15
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）

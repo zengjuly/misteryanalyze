@@ -49,7 +49,13 @@ with tab2:
     watchlist = load_watchlist()
     st.subheader(f"自选股 ({len(watchlist)} 只)")
     if watchlist:
-        st.write("、".join(watchlist))
+        # 显示 代码 - 名称（docs/ui2.md 修复: 自选股列表显示股票名称）
+        from web.utils.session import get_feeder
+        if 'stock_dict' not in st.session_state:
+            st.session_state['stock_dict'] = get_feeder().get_all_stock_code_name()
+        sd = st.session_state['stock_dict']
+        display = [f"{c} - {sd.get(c, '')}" for c in watchlist]
+        st.write("、".join(display))
         if st.button("🗑️ 清空自选股"):
             save_watchlist([])
             st.rerun()

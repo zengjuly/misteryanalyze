@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.13.0
+- **版本**: 1.13.1
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-15
 - **文档类型**: 系统设计文档
@@ -1078,6 +1078,40 @@ data_source:
 
 **验证**：AppTest 6/6 渲染 + 缓存读写 5 项断言 + K线 v2（10 trace/MACD三线/4 shape）+
 代码-名称字典（5208 只）——17/17 通过
+
+### 4.10.2 Web UI 修复（用户反馈，v1.13.1）— ★★
+
+**① 财务数据 NA 修复**：
+- 根因1：`FinancialStorage.ensure_financial` 内 MultiSourceClient 未 login → baostock
+  接口缺 user_id 上下文 → 返回全 None dict（被 `if not data` 放行并缓存）
+- 根因2：PE/PB/股息率 计算依赖 `current_price`（get_financial_data 第二参数，main.py
+  从日K最新收盘取）——ensure 未传 → 全 None
+- 根因3：修复前存入的半脏缓存（ROE/EPS 有值但 PE/PB None）被"报告期有值即有效"
+  判定命中 → 永不刷新 → 清空 stock_financial_data 全表重填（18 只，17 只有 PE）
+- 修复后：600150 报告期 2026-03-31 / ROE 3.30% / PE 22.24 / PB 0.73 / 股息率 0.75%
+
+**② 行业板块数据（baostock 翻页兼容，pandas 3.0）**：
+- 根因：baostock 0.9.3 `rs.get_data()` 翻页用 `df.append()`（pandas 3.0 已移除）→
+  query_stock_industry（5206 行=3 页）崩溃；且 `rs.next()` 在 cur_row_num 未消费时
+  恒返回 True → 死循环
+- 修复：`get_industry_data` 手动翻页（`cur_row_num=len(data)` 消费后 next()，页数上限8）+
+  pd.concat 拼接；翻页前确保 login（user_id 上下文）
+- `DataFeeder.get_industry_data`：优先 db 缓存 → 在线源拉取并 `update_industries` 自动
+  填充 db（83 行业 / 5206 只，证监会行业分类——本机无通达信行业文件时的可行替代）；
+  MarketDataClient 无行业接口，须用 MultiSourceClient
+- 效果：板块监控（之前为空）、扫描指定板块、个股所属板块全部可用
+
+**③ 页面修复（5 处）**：
+- 个股分析：显示所属板块；财务用 ensure_financial（无缓存自动拉取+缓存）；
+  一次分析完成日/周/月K（三个 tab，各含 K 线 + 箱体 + 最新价）
+- 全市场扫描：支持指定板块筛选（行业板块下拉，按通达信/证监会行业分类）；
+  扫描结果显示行业板块列（_run_scan 加'行业板块'字段）
+- 板块监控：行业数据修复后自然有数据（83 板块强度排名 + 得分）
+- 真三振池：自选股列表显示"代码 - 名称"（get_all_stock_code_name）
+- stock_table：增加行业板块列
+
+**验证**：21/21（行业填充/config 18 只全有板块/财务 PE-PB-股息率/6 页渲染/
+板块强度 83 个/自选股名称）
 
 ## 5. 接口设计
 

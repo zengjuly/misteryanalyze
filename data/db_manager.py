@@ -165,6 +165,26 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def update_industries(self, code_industry: Dict[str, str]) -> int:
+        """批量更新行业分类（docs/ui2.md 板块数据填充）
+        :param code_industry: {code: industry}
+        :return: 更新条数
+        """
+        if not code_industry:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = [(ind, code) for code, ind in code_industry.items()
+                        if code and ind]
+                conn.executemany(
+                    "UPDATE stock_industry_info SET industry=? WHERE code=?",
+                    rows)
+                conn.commit()
+                return len(rows)
+            finally:
+                conn.close()
+
     def get_stock_info(self, limit: int = None, stock_only: bool = True,
                        listed_only: bool = True) -> pd.DataFrame:
         """

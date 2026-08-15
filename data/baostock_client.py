@@ -382,16 +382,32 @@ class BaostockClient:
             return {'ROE': None, 'EPS': None, 'PE': None, 'PB': None, '股息率': None, '每股股息': None, '报告期': None}
     
     def get_industry_data(self) -> pd.DataFrame:
-        """获取行业板块数据"""
+        """获取行业板块数据（baostock query_stock_industry）
+        注意: 不能直接用 rs.get_data()——baostock 0.9.3 内部翻页用
+        DataFrame.append（pandas 3.0 已移除）→ 多页数据崩溃；
+        手动翻页: 先消费当前页（cur_row_num=len(data)）再 rs.next() 请求下一页，
+        否则 next() 因当前页未消费恒返回 True 造成死循环；页数上限 8 页防异常
+        """
         try:
-            result = bs.query_stock_industry()
-            if result.error_code == '0':
-                industry_data = result.get_data()
-                self.logger.info(f"🏢 获取到 {len(industry_data)} 个行业板块")
-                return industry_data
-            else:
-                self.logger.error(f"❌ 获取行业板块数据失败: {result.error_msg}")
+            rs = bs.query_stock_industry()
+            if rs.error_code != '0':
+                self.logger.error(f"❌ 获取行业板块数据失败: {rs.error_msg}")
                 return pd.DataFrame()
+            frames = []
+            page = 0
+            while rs.error_code == '0' and page < 8:
+                if rs.data:
+                    frames.append(pd.DataFrame(rs.data, columns=rs.fields))
+                page += 1
+                rs.cur_row_num = len(rs.data)  # 消费当前页 → next() 走翻页分支
+                if not rs.next():
+                    break
+            if frames:
+                df = pd.concat(frames, ignore_index=True)
+                self.logger.info(f"🏢 获取到 {len(df)} 个行业板块记录"
+                                 f"（{page} 页）")
+                return df
+            return pd.DataFrame()
         except Exception as e:
             # baostock 部分版本存在兼容性问题，行业数据失败不影响主分析流程
             self.logger.warning(f"⚠️ 获取行业板块数据异常（不影响主分析）: {e}")

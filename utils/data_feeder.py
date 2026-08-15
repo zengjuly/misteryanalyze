@@ -44,6 +44,8 @@ class DataFeeder:
                 self.client = MultiSourceClient(config)
             except Exception as e:
                 logger.warning(f"⚠️ DataFeeder 回退客户端初始化失败: {e}")
+        # 行业/财务客户端（MultiSourceClient 继承 BaostockClient，有行业/财务接口）
+        self._industry_client = None
 
     def get_daily(self, code: str, start_date: str = None,
                   end_date: str = None) -> Optional[pd.DataFrame]:
@@ -125,27 +127,60 @@ class DataFeeder:
             logger.warning(f"⚠️ DataFeeder.get_all_stock_code_name 异常: {str(e)[:80]}")
         return {}
 
-    def get_industry_data(self) -> Dict:
-        """获取行业分类数据（docs/ui.md §6）
+    def get_industry_data(self, refresh: bool = False) -> Dict:
+        """获取行业分类数据（docs/ui.md §6 + ui2.md 通达信行业板块）
+        优先读 db stock_industry_info（已填充）；为空则从多源客户端拉取并自动填充 db
+        :param refresh: 强制从在线源刷新行业分类
         :return: {'code_map': {code: 行业名}, 'industry_codes': {行业名: [codes]}}
-                获取失败返回空字典
         """
+        # 1. 优先 db 缓存
+        if not refresh:
+            try:
+                from db_manager import MysteryDB
+                db = MysteryDB()
+                df = db.get_stock_info(limit=None)
+                if df is not None and not df.empty and 'industry' in df.columns:
+                    filled = df[df['industry'].notna()
+                                & (df['industry'].astype(str) != '')
+                                & (df['industry'].astype(str) != 'nan')]
+                    if len(filled) > 100:  # 已填充足够数据
+                        code_map = dict(zip(filled['code'], filled['industry']))
+                        industry_codes = {}
+                        for c, ind in code_map.items():
+                            industry_codes.setdefault(str(ind), []).append(c)
+                        return {'code_map': code_map,
+                                'industry_codes': industry_codes}
+            except Exception as e:
+                logger.warning(f"⚠️ DataFeeder 行业缓存读取失败: {str(e)[:60]}")
+        # 2. 在线源拉取（MultiSourceClient 继承 BaostockClient，有 get_industry_data）
         try:
-            if self.client is not None and hasattr(self.client, 'get_industry_data'):
-                return self.client.get_industry_data()
+            if self._industry_client is None:
+                from multi_source_client import MultiSourceClient
+                self._industry_client = MultiSourceClient(self.config)
+            # 翻页需要登录上下文（user_id），确保已登录
+            if not getattr(self._industry_client, 'login_success', False):
+                self._industry_client.login()
+            df = self._industry_client.get_industry_data()
+            if df is not None and not df.empty:
+                    code_map, industry_codes = {}, {}
+                    for _, row in df.iterrows():
+                        code = row.get('code', '')
+                        industry = row.get('industry', '')
+                        if code and industry and str(industry) != 'nan':
+                            code_map[str(code)] = str(industry)
+                            industry_codes.setdefault(str(industry), []).append(str(code))
+                    if code_map:
+                        # 3. 自动填充 db（板块监控/扫描板块筛选离线可用）
+                        try:
+                            from db_manager import MysteryDB
+                            db = MysteryDB()
+                            n = db.update_industries(code_map)
+                            logger.info(f"🏢 行业分类已填充 db: {n} 只, "
+                                        f"{len(industry_codes)} 个行业")
+                        except Exception as e:
+                            logger.warning(f"⚠️ 行业分类填充 db 失败: {str(e)[:60]}")
+                        return {'code_map': code_map,
+                                'industry_codes': industry_codes}
         except Exception as e:
             logger.warning(f"⚠️ DataFeeder.get_industry_data 异常: {str(e)[:80]}")
-        # 兜底: 从 db 行业表读取
-        try:
-            from db_manager import MysteryDB
-            db = MysteryDB()
-            df = db.get_stock_info(limit=None)
-            if df is not None and not df.empty and 'industry' in df.columns:
-                code_map = dict(zip(df['code'], df['industry']))
-                industry_codes = {}
-                for c, ind in code_map.items():
-                    industry_codes.setdefault(ind, []).append(c)
-                return {'code_map': code_map, 'industry_codes': industry_codes}
-        except Exception as e:
-            logger.warning(f"⚠️ DataFeeder 行业数据兜底失败: {str(e)[:80]}")
         return {}
