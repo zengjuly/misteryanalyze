@@ -152,35 +152,41 @@ class DataFeeder:
                                 'industry_codes': industry_codes}
             except Exception as e:
                 logger.warning(f"⚠️ DataFeeder 行业缓存读取失败: {str(e)[:60]}")
-        # 2. 在线源拉取（MultiSourceClient 继承 BaostockClient，有 get_industry_data）
+        # 2. 在线源拉取（东财行业主源——名称简短接近通达信风格；失败回退 baostock）
         try:
-            if self._industry_client is None:
-                from multi_source_client import MultiSourceClient
-                self._industry_client = MultiSourceClient(self.config)
-            # 翻页需要登录上下文（user_id），确保已登录
-            if not getattr(self._industry_client, 'login_success', False):
-                self._industry_client.login()
-            df = self._industry_client.get_industry_data()
-            if df is not None and not df.empty:
-                    code_map, industry_codes = {}, {}
-                    for _, row in df.iterrows():
-                        code = row.get('code', '')
-                        industry = row.get('industry', '')
-                        if code and industry and str(industry) != 'nan':
-                            code_map[str(code)] = str(industry)
-                            industry_codes.setdefault(str(industry), []).append(str(code))
-                    if code_map:
-                        # 3. 自动填充 db（板块监控/扫描板块筛选离线可用）
-                        try:
-                            from db_manager import MysteryDB
-                            db = MysteryDB()
-                            n = db.update_industries(code_map)
-                            logger.info(f"🏢 行业分类已填充 db: {n} 只, "
-                                        f"{len(industry_codes)} 个行业")
-                        except Exception as e:
-                            logger.warning(f"⚠️ 行业分类填充 db 失败: {str(e)[:60]}")
-                        return {'code_map': code_map,
-                                'industry_codes': industry_codes}
+            from utils.em_industry import fetch_em_industry
+            em = fetch_em_industry()
+            if em and em.get('code_map'):
+                code_map, industry_codes = em['code_map'], em['industry_codes']
+            else:
+                # 兜底: baostock 证监会行业分类
+                if self._industry_client is None:
+                    from multi_source_client import MultiSourceClient
+                    self._industry_client = MultiSourceClient(self.config)
+                if not getattr(self._industry_client, 'login_success', False):
+                    self._industry_client.login()
+                df = self._industry_client.get_industry_data()
+                if df is None or df.empty:
+                    return {}
+                code_map, industry_codes = {}, {}
+                for _, row in df.iterrows():
+                    code = row.get('code', '')
+                    industry = row.get('industry', '')
+                    if code and industry and str(industry) != 'nan':
+                        code_map[str(code)] = str(industry)
+                        industry_codes.setdefault(str(industry), []).append(str(code))
+            if code_map:
+                # 3. 自动填充 db（板块监控/扫描板块筛选离线可用）
+                try:
+                    from db_manager import MysteryDB
+                    db = MysteryDB()
+                    n = db.update_industries(code_map)
+                    logger.info(f"🏢 行业分类已填充 db: {n} 只, "
+                                f"{len(industry_codes)} 个行业")
+                except Exception as e:
+                    logger.warning(f"⚠️ 行业分类填充 db 失败: {str(e)[:60]}")
+                return {'code_map': code_map,
+                        'industry_codes': industry_codes}
         except Exception as e:
             logger.warning(f"⚠️ DataFeeder.get_industry_data 异常: {str(e)[:80]}")
         return {}
