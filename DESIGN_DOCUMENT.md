@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.13.1
+- **版本**: 1.14.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-15
 - **文档类型**: 系统设计文档
@@ -1112,6 +1112,38 @@ data_source:
 
 **验证**：21/21（行业填充/config 18 只全有板块/财务 PE-PB-股息率/6 页渲染/
 板块强度 83 个/自选股名称）
+
+### 4.11 数据层"本地优先+过期回退"（docs/tdx2.md）— ★★
+
+**目标**：本地数据新鲜则零网络；过期/缺失自动回退 akshare → baostock。最小改动贴合现有框架。
+
+**路径规则（tdx_path_resolver.py 新建）**：
+- `resolve_home()`：TDX_HOME env > config tdx.home_dir > 默认 /mnt/bigdata/tdx/files/new_tdx
+- `resolve_vipdoc_for_kline()`：**{home}/vipdoc（含lday）> 显式 vipdoc_dir（含lday）>
+  TDX_VIPDOC_DIR > 默认**——本机为 vipdoc/{sh,sz,bj}/lday 独立结构，走第二优先级
+- `resolve_vipdoc_for_fin()`：仅 TDX_VIPDOC_DIR（env > config > 默认）——**财务绝不读 TDX_HOME**
+- 优先级细节：**env 覆盖 config**（tdx2 验收用例）
+- 板块：仅 {home}/T0002/blocknew、hq_cache（本机无 TDX_HOME → 空，由 db 行业分类兜底）
+
+**新鲜度判定**：
+- 日K：`.day` 文件末根K线日期（读尾部 32 字节定长记录）距今 ≤ max_age_days+2（周末缓冲）
+  → 新鲜；文件缺失/超期 → 过期 → 协议补充 → 失败回退在线源
+- 财务：最新 gpcw 报告期（扫描 {fin_dir} 与 {fin_dir}/cw/）在 max_age_days+45（季报滞后）内
+  或包 mtime 新鲜；无包 → 过期 → 在线源
+- 配置：config tdx.freshness（kline 1 / block 3 / financial 30 天）
+
+**tdx_local_client.py 改动**：
+- __init__：日K目录用 resolve_vipdoc_for_kline（self.vipdoc_dir），财务用
+  resolve_vipdoc_for_fin（self.fin_dir，mootdx Financial 与 gpcw 探测均只读 fin_dir）
+- get_daily_data：入口加 `is_kline_fresh(day_file)` 检查——过期打
+  `[TDX本地-过期→fallback]` 日志后走协议补充（失败返回 None → 上层 akshare/baostock）
+- get_financial_data：`is_financial_fresh(fin_dir)` 不新鲜直接返回空（在线源兜底）
+- get_block_data（新增）：TDX_HOME/T0002/*.blk 解析（市场#代码格式，gbk 编码），
+  无 home 返回空
+- multi_source 无需改动（tdx_local 返回 None/空 → 原 fallback 链自然生效，日志在源头）
+
+**单测**：tests/test_tdx_path_resolver.py 10 项（新鲜/过期/周末缓冲/文件缺失/
+home优先/lday结构/财务隔离/财务新鲜/路径结构）——套件 56/56 通过
 
 ## 5. 接口设计
 

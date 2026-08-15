@@ -52,9 +52,13 @@ class TdxLocalClient:
     def __init__(self, vipdoc_dir: str = None, enable: bool = True,
                  config: dict = None):
         # 优先级: 环境变量TDX_VIPDOC_DIR > 配置 > 默认绝对路径（仓库外）
-        self.vipdoc_dir = resolve_path(
-            'TDX_VIPDOC_DIR', vipdoc_dir,
-            '/home/ai/ai_runner/stock/data/tdx_vipdoc')
+        # docs/tdx2.md: 日K用 resolve_vipdoc_for_kline（home/vipdoc > vipdoc_dir），
+        # 财务用 resolve_vipdoc_for_fin（仅 VIPDOC，绝不读 TDX_HOME）
+        from tdx_path_resolver import (resolve_vipdoc_for_kline,
+                                       resolve_vipdoc_for_fin)
+        self.vipdoc_dir = resolve_vipdoc_for_kline() if vipdoc_dir is None \
+            else vipdoc_dir
+        self.fin_dir = resolve_vipdoc_for_fin()
         self.enable = enable and MOOTDX_AVAILABLE
         self.reader = None
         self.login_success = False
@@ -123,6 +127,16 @@ class TdxLocalClient:
         返回标准中文列名 DataFrame，与 AKShare/Baostock 一致
         """
         code = self.normalize_stock_code(stock_code)
+
+        # docs/tdx2.md: 本地优先 + 过期回退（新鲜度判定）
+        # 日K文件缺失或末根K线超期 → 协议补充 → 失败回退在线源(akshare/baostock)
+        from tdx_path_resolver import day_file_path, is_kline_fresh
+        day_file = day_file_path(code, self.vipdoc_dir)
+        if not is_kline_fresh(day_file):
+            logger.info(f"[TDX本地-过期→fallback] {code} 本地日K缺失或末根K线"
+                        f"超期({day_file})，尝试协议补充")
+            return self._fetch_protocol(stock_code, start_date, end_date)
+        logger.debug(f"[TDX本地-新鲜] {code} {day_file}")
 
         # 本地读取（TdxIncremental 兼容标准/扁平目录结构）
         df = self.incremental_reader._read_day_file_tail(code, None)
@@ -212,10 +226,16 @@ class TdxLocalClient:
         此处保留接口 + 探测本地财务包状态，便于后续接入自研解析。
         """
         code = self.normalize_stock_code(stock_code)
+        # docs/tdx2.md: 财务仅从 VIPDOC（fin_dir，含 cw/ 兼容）读取，绝不读 TDX_HOME
+        from tdx_path_resolver import is_financial_fresh
+        if not is_financial_fresh(self.fin_dir):
+            logger.info(f"[TDX本地-财务过期→fallback] {code} 财务包缺失或超期，"
+                        f"回退在线源")
+            return pd.DataFrame()
         # 尝试 mootdx.financial（0.11.7 为空包，捕获 ImportError 降级）
         try:
             from mootdx.financial import Financial
-            fin = Financial(tdxdir=self.vipdoc_dir)
+            fin = Financial(tdxdir=self.fin_dir)
             df = fin.get_stock_financial(symbol=code,
                                          market=self._get_market(code))
             if df is not None and not df.empty:
@@ -224,12 +244,56 @@ class TdxLocalClient:
             pass
         except Exception as e:
             logger.debug(f"mootdx财务解析 {code} 失败: {str(e)[:60]}")
-        # 探测本地财务包状态（可观测性）
-        gpcw = glob.glob(os.path.join(self.vipdoc_dir, 'gpcw*.zip'))
+        # 探测本地财务包状态（可观测性，兼容 根目录 与 cw/ 子目录）
+        gpcw = (glob.glob(os.path.join(self.fin_dir, 'gpcw*.zip'))
+                + glob.glob(os.path.join(self.fin_dir, 'cw', 'gpcw*.zip'))
+                + glob.glob(os.path.join(self.fin_dir, 'gpcw*.dat')))
         if gpcw:
-            logger.debug(f"{code} 本地财务包 {len(gpcw)} 个(gpcw*.zip)，"
+            logger.debug(f"{code} 本地财务包 {len(gpcw)} 个，"
                          f"二进制解析暂未实现，由在线源兜底")
         return pd.DataFrame()
+
+    def get_block_data(self) -> dict:
+        """读取通达信板块数据（docs/tdx2.md: 仅从 TDX_HOME/T0002 读取）
+        本机无 TDX_HOME（默认 /mnt/bigdata/tdx/files/new_tdx 不存在）时返回空，
+        由上层（db行业分类/baostock）兜底。返回 {'板块名': [代码]}。
+        """
+        from tdx_path_resolver import resolve_home, is_file_fresh
+        home = resolve_home()
+        block_dirs = [
+            os.path.join(home, 'T0002', 'blocknew'),
+            os.path.join(home, 'T0002', 'hq_cache'),
+        ]
+        result = {}
+        for bdir in block_dirs:
+            if not os.path.isdir(bdir):
+                continue
+            if not is_file_fresh(bdir, kind='block'):
+                logger.info(f"[TDX本地-板块过期→fallback] {bdir}")
+                return {}
+            try:
+                # 通达信板块文件: *.blk（每行 市场+代码，如 1#600150）
+                for f in os.listdir(bdir):
+                    if not f.endswith('.blk'):
+                        continue
+                    name = f[:-4]
+                    codes = []
+                    with open(os.path.join(bdir, f), encoding='gbk',
+                              errors='ignore') as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if '#' in line:
+                                mkt, c = line.split('#', 1)
+                                mkt = 'sh' if mkt == '1' else (
+                                    'sz' if mkt == '0' else 'bj')
+                                codes.append(f"{mkt}.{c.strip()}")
+                    if codes:
+                        result[name] = codes
+            except Exception as e:
+                logger.warning(f"⚠️ 板块文件解析失败 {bdir}: {str(e)[:80]}")
+        if result:
+            logger.info(f"🏢 TDX 本地板块读取: {len(result)} 个（{home}）")
+        return result
 
     def financial_source_status(self) -> dict:
         """本地财务数据源状态（可观测性报告用）"""
