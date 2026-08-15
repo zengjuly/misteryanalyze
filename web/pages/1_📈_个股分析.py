@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# 1_📈_个股分析.py - 个股深度分析页面（docs/ui.md §4.1）
-"""输入股票代码 → 评分卡片/K线/三大心法/四维共振/最近N日数据"""
+# 1_📈_个股分析.py - 个股深度分析页面（docs/ui.md §4.1 + docs/ui2.md 升级）
+"""模糊搜索 → 深度分析（Excel对齐：震荡区间/周月K/筹码/主升浪8项/财务）
++ 周期切换K线(MACD+震荡区间) + 分析结果缓存（行情未更新不重复分析）"""
 import sys
 import os
 
@@ -14,82 +15,193 @@ import streamlit as st
 
 st.set_page_config(page_title="个股分析", page_icon="📈", layout="wide")
 
+from streamlit_searchbox import st_searchbox
+
 from web.utils.session import get_feeder, get_logic, get_config
 from web.components.kline_chart import plot_kline
 from web.components.score_card import (
     render_metric_cards, render_detail_cards, render_advice)
 
 st.title("📈 个股深度分析")
-st.caption("输入股票代码（如 sh600150 / 600150 / 中国船舶），查看三大心法 + 四维共振综合信号")
+st.caption("支持代码/名称模糊搜索，分析结果与 Excel 报告对齐"
+           "（震荡区间/周月K/筹码/主升浪8项/财务），K线含 MACD 与周期切换")
 
-# ---------- 输入 ----------
 cfg = get_config()
-stock_pool = cfg.get('stocks', [])
 feeder = get_feeder()
 logic = get_logic()
 
-c1, c2 = st.columns([3, 1])
+# ---------- 股票代码-名称字典（模糊搜索） ----------
+if 'stock_dict' not in st.session_state:
+    st.session_state['stock_dict'] = feeder.get_all_stock_code_name()
+stock_dict = st.session_state['stock_dict']
+
+
+def search_stock(term: str):
+    """模糊搜索：匹配代码或名称，返回 '代码 - 名称' 列表"""
+    term = (term or '').lower().strip()
+    if not term:
+        return [f"{c} - {n}" for c, n in list(stock_dict.items())[:30]]
+    hits = [f"{c} - {n}" for c, n in stock_dict.items()
+            if term in c.lower() or term in n.lower()]
+    return hits[:30]
+
+
+def resolve_code(sel: str):
+    """解析 'sh600150 - 中国船舶' → sh600150"""
+    return sel.split(' - ')[0].strip() if sel else ''
+
+
+# ---------- 输入区 ----------
+c1, c2 = st.columns([3, 2])
 with c1:
-    code_input = st.text_input("股票代码", value="sh600150",
-                               placeholder="如 sh600150 或 600150 或 贵州茅台")
+    selected = st_searchbox(
+        search_stock, key="stock_search",
+        label="🔍 代码/名称模糊搜索",
+        placeholder="输入代码或名称，如 600150 / 中国船舶")
 with c2:
-    pool_select = st.selectbox("或从股票池选择", [''] + stock_pool)
-if pool_select:
-    code_input = pool_select
+    pool_names = [f"{s} - {stock_dict.get(s, '')}" for s in cfg.get('stocks', [])]
+    pool_sel = st.selectbox("或从股票池选择", [''] + pool_names)
+    if pool_sel:
+        selected = pool_sel
 
-if st.button("🚀 开始分析", type="primary", width="stretch"):
-    code = code_input.strip()
-    if not code:
-        st.warning("请输入股票代码")
+period = st.radio("K线周期", ["日线", "周线", "月线"], horizontal=True)
+
+if st.button("🚀 开始分析", type="primary", use_container_width=True):
+    if not selected:
+        st.warning("请选择或输入股票代码")
         st.stop()
-    # 归一化: 600150 -> sh600150（按前缀推断市场）
-    if code.isdigit():
-        code = ('sh' if code.startswith('6') else
-                'bj' if code.startswith(('4', '8')) else 'sz') + code
-    elif '.' in code and len(code) == 9:
-        code = code.replace('.', '')  # sh.600150 -> sh600150
+    code = resolve_code(selected)
+    if not code:
+        st.warning("无法解析股票代码")
+        st.stop()
+    name = stock_dict.get(code, code)
 
-    with st.spinner(f"正在分析 {code} ..."):
+    with st.spinner(f"正在分析 {code} {name} ..."):
         try:
-            # 获取数据
+            from db_manager import MysteryDB
+            db = MysteryDB()
             daily = feeder.get_daily(code)
             if daily is None or daily.empty:
-                st.error(f"❌ 无法获取 {code} 的行情数据（请检查代码或数据源）")
+                st.error(f"❌ 无法获取 {code} 行情数据")
                 st.stop()
-            weekly = feeder.get_weekly(code)
-            market_data = feeder.get_market_index()
-            # 名称
-            name = code
-            try:
-                from data.baostock_client import BaostockClient
-                bc = BaostockClient()
-                name = bc.get_stock_name(code)
-            except Exception:
-                pass
-            # 综合信号（三大心法 + 四维共振）
-            signal = logic.comprehensive_signal_analysis(
-                daily, weekly_data=weekly, market_data=market_data,
-                industry_data=None, industry_trend=None)
+            last_date = str(daily['日期'].max())[:10]
 
-            st.success(f"✅ {code} {name} 分析完成")
-            # 1. 评分卡片区
+            # ===== 分析结果缓存（docs/ui2.md 二级缓存） =====
+            db_code = code[:2] + '.' + code[2:] if '.' not in code else code
+            cached = db.get_analysis_cache(db_code, 'daily', last_date)
+            if cached and cached.get('signal'):
+                signal = cached['signal']
+                st.caption(f"⚡ 命中分析缓存（最新交易日 {last_date}，"
+                           f"行情未更新未重复分析）")
+            else:
+                weekly = feeder.get_weekly(code)
+                market_data = feeder.get_market_index()
+                signal = logic.comprehensive_signal_analysis(
+                    daily, weekly_data=weekly, market_data=market_data,
+                    industry_data=None, industry_trend=None)
+                db.set_analysis_cache(db_code, 'daily', last_date,
+                                      {'signal': signal})
+
+            st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
+
+            # ---------- 1. 评分卡片 ----------
             st.subheader("🎯 评分概览")
             render_metric_cards(signal)
-            # 2. 详细状态卡片
             st.subheader("🧭 三大心法与共振状态")
             render_detail_cards(signal)
-            # 3. 操作建议
             st.subheader("💡 操作建议")
             render_advice(signal)
-            # 4. K线图
-            st.subheader("📊 K线图（日线 + 均线 + 成交量）")
-            fig = plot_kline(daily.tail(120), title=f"{code} {name} 日K线")
+
+            # ---------- 2. 财务数据（docs/ui2.md） ----------
+            st.subheader("💰 财务数据")
+            try:
+                from financial_storage import FinancialStorage
+                fs = FinancialStorage(db)
+                fi = fs.load_latest(db_code) or {}
+                f1, f2, f3, f4 = st.columns(4)
+                f1.metric("PE", fi.get('PE', 'N/A'))
+                f2.metric("PB", fi.get('PB', 'N/A'))
+                f3.metric("股息率",
+                          f"{fi.get('股息率', 0):.2f}%" if fi.get('股息率') is not None else 'N/A')
+                f4.metric("最新ROE",
+                          f"{fi.get('ROE', 0):.2f}%" if fi.get('ROE') is not None else 'N/A')
+                hist = fs.load_history(db_code, limit=8)
+                if hist is not None and not hist.empty:
+                    with st.expander("📊 近三年 ROE 历史"):
+                        roe_df = hist[['报告期', 'ROE']].dropna().tail(8)
+                        st.dataframe(roe_df, width="stretch")
+            except Exception as e:
+                st.warning(f"财务数据获取失败: {e}")
+
+            # ---------- 3. Excel 对齐明细 ----------
+            st.subheader("📋 分析明细（与Excel报告对齐）")
+            # 震荡区间（自适应平台 + 平台箱体）
+            try:
+                from analysis.adaptive_platform import analyze_adaptive_platform
+                ap = analyze_adaptive_platform(daily, stock_code=code)
+                p1, p2, p3 = st.columns(3)
+                p1.metric("自适应平台 POC", ap.get('POC', 'N/A'))
+                p2.metric("平台上轨", ap.get('上轨', ap.get('upper', 'N/A')))
+                p3.metric("平台下轨", ap.get('下轨', ap.get('lower', 'N/A')))
+            except Exception as e:
+                st.caption(f"自适应平台: {e}")
+            plat = logic.platform_breakthrough_analysis(daily)
+            if plat.get('平台范围'):
+                st.markdown(f"**震荡区间（平台箱体）**: {plat.get('平台范围')} "
+                            f"| 状态: {plat.get('平台状态', '未知')}")
+            # 筹码分析
+            det = logic.technical_detail_capture(daily)
+            st.markdown(f"**筹码分析**: 集中度 {det.get('筹码集中度', '未知')} "
+                        f"| 趋势 {det.get('筹码趋势', '未知')}")
+            # 主升浪8项指标对比表
+            cl = logic.main_bull_wave_checklist(daily)
+            if cl.get('详情'):
+                items = [d for d in cl['详情'] if '✅' in d or '❌' in d]
+                if items:
+                    st.markdown(f"**主升浪8项指标对比**（满足 {cl.get('满足数量', 0)}/8）")
+                    for it in items:
+                        st.markdown(f"- {it}")
+            # 周/月K箱体（简版: 重采样后近N周期高低）
+            from kline_resampler import KLineResampler
+            rs = KLineResampler()
+            wk = rs.resample(daily, 'weekly')
+            mo = rs.resample(daily, 'monthly')
+            if wk is not None and len(wk):
+                w_hi, w_lo = float(wk['最高价'].tail(20).max()), float(wk['最低价'].tail(20).min())
+                st.markdown(f"**周线箱体**（近20周）: {w_lo:.2f} ~ {w_hi:.2f} "
+                            f"| 最新 {wk['收盘价'].iloc[-1]:.2f}")
+            if mo is not None and len(mo):
+                m_hi, m_lo = float(mo['最高价'].tail(12).max()), float(mo['最低价'].tail(12).min())
+                st.markdown(f"**月线箱体**（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
+                            f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
+
+            # ---------- 4. K线图（周期切换 + MACD + 震荡区间） ----------
+            st.subheader("📊 K线图（MACD + 震荡区间）")
+            box = None
+            if period == "日线":
+                kdf = daily.tail(150)
+                box = {'上沿': float(daily['最高价'].tail(20).max()),
+                       '下沿': float(daily['最低价'].tail(20).min()),
+                       'POC': ap.get('POC') if 'ap' in dir() else None}
+            elif period == "周线":
+                kdf = wk.tail(80) if wk is not None and len(wk) else daily.tail(80)
+                box = {'上沿': w_hi, '下沿': w_lo}
+            else:
+                kdf = mo.tail(48) if mo is not None and len(mo) else daily.tail(48)
+                box = {'上沿': m_hi, '下沿': m_lo}
+            # 补均线（重采样后可能缺失）
+            from indicators.ma_indicators import MAIndicators
+            if 'MA5' not in kdf.columns:
+                kdf = MAIndicators().calculate_ma(kdf)
+            fig = plot_kline(kdf, title=f"{code} {name} {period}", box=box)
             st.plotly_chart(fig, width="stretch")
-            # 5. 分析详情
-            st.subheader("📋 分析详情")
+
+            # ---------- 5. 分析详情 ----------
+            st.subheader("📋 触发条件明细")
             for d in signal.get('详情', []):
                 st.markdown(f"- {d}")
-            # 6. 最近20日数据
+
+            # ---------- 6. 最近20日数据 ----------
             st.subheader("🗓️ 最近20个交易日数据")
             tail = daily.tail(20).copy()
             tail['日期'] = tail['日期'].astype(str)

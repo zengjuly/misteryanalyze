@@ -53,7 +53,32 @@ with tab2:
         if st.button("🗑️ 清空自选股"):
             save_watchlist([])
             st.rerun()
-    else:
-        st.info("暂无自选股，可在「真三振池」或个股分析页加入")
+    st.divider()
+    # 模糊添加自选股（docs/ui2.md §四: streamlit-searchbox）
+    st.subheader("➕ 模糊添加自选股")
+    from streamlit_searchbox import st_searchbox
+    from web.utils.session import get_feeder
+    if 'stock_dict' not in st.session_state:
+        st.session_state['stock_dict'] = get_feeder().get_all_stock_code_name()
+    stock_dict = st.session_state['stock_dict']
+
+    def _search(term: str):
+        term = (term or '').lower().strip()
+        if not term:
+            return [f"{c} - {n}" for c, n in list(stock_dict.items())[:20]]
+        return [f"{c} - {n}" for c, n in stock_dict.items()
+                if term in c.lower() or term in n.lower()][:20]
+
+    add_item = st_searchbox(_search, key="pool_add", label="🔍 输入代码/名称",
+                            placeholder="如 600519 / 贵州茅台")
+    if st.button("➕ 添加到自选股") and add_item:
+        code = add_item.split(" - ")[0].strip()
+        if code and code not in watchlist:
+            watchlist.append(code)
+            save_watchlist(watchlist)
+            st.success(f"✅ 已添加 {add_item}")
+            st.rerun()
+        elif code in watchlist:
+            st.info("该股票已在自选股中")
 
 st.caption("💡 提示：真三振股票可在「📈 个股分析」页输入代码做深度分析")

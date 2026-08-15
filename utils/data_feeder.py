@@ -106,6 +106,25 @@ class DataFeeder:
             logger.warning("⚠️ DataFeeder 指数获取全部失败")
         return result
 
+    def get_all_stock_code_name(self) -> Dict[str, str]:
+        """全市场股票代码-名称字典（docs/ui2.md 模糊搜索用）
+        :return: {code: name}，code 为 sh600150 格式（无点）
+        """
+        try:
+            from db_manager import MysteryDB
+            db = MysteryDB()
+            df = db.get_stock_info(limit=None)
+            if df is not None and not df.empty and 'code_name' in df.columns:
+                out = {}
+                for c, n in zip(df['code'], df['code_name']):
+                    if n and str(n) != 'nan' and c:
+                        out[str(c).replace('.', '')] = str(n)
+                if out:
+                    return out
+        except Exception as e:
+            logger.warning(f"⚠️ DataFeeder.get_all_stock_code_name 异常: {str(e)[:80]}")
+        return {}
+
     def get_industry_data(self) -> Dict:
         """获取行业分类数据（docs/ui.md §6）
         :return: {'code_map': {code: 行业名}, 'industry_codes': {行业名: [codes]}}

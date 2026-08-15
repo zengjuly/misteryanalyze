@@ -103,6 +103,16 @@ class MysteryDB:
                 -- 基本面查询索引
                 CREATE INDEX IF NOT EXISTS idx_financial_query
                     ON stock_financial_data (code, report_date DESC);
+
+                -- 4. 分析结果缓存表（docs/ui2.md 二级缓存: 行情未更新不重复分析）
+                CREATE TABLE IF NOT EXISTS mystery_analysis_cache (
+                    stock_code      TEXT NOT NULL,   -- 证券代码 sh.600150
+                    period          TEXT NOT NULL,   -- daily/full_scan
+                    last_trade_date TEXT NOT NULL,   -- 最新K线日期 YYYY-MM-DD
+                    report_json     TEXT NOT NULL,   -- 分析结果JSON
+                    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (stock_code, period, last_trade_date)
+                );
                 """)
                 conn.commit()
                 logger.debug(f"✅ 数据库初始化完成: {self.db_path}")
@@ -362,6 +372,54 @@ class MysteryDB:
                     "SELECT DISTINCT code FROM stock_kline_data WHERE period=?",
                     (period,))
                 return [r[0] for r in cur.fetchall()]
+            finally:
+                conn.close()
+
+    # ============ 分析结果缓存（docs/ui2.md 二级缓存） ============
+    def get_analysis_cache(self, stock_code: str, period: str,
+                           last_trade_date: str) -> Optional[Dict]:
+        """读取分析结果缓存（行情未更新时直接复用，避免重复分析）
+        :param stock_code: sh.600150
+        :param period: daily/weekly/monthly/full_scan
+        :param last_trade_date: 最新K线日期（缓存键的一部分）
+        :return: 分析结果 dict 或 None
+        """
+        import json
+        if not last_trade_date:
+            return None
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT report_json FROM mystery_analysis_cache "
+                    "WHERE stock_code=? AND period=? AND last_trade_date=?",
+                    (stock_code, period, str(last_trade_date))).fetchone()
+                return json.loads(row[0]) if row else None
+            except Exception:
+                return None
+            finally:
+                conn.close()
+
+    def set_analysis_cache(self, stock_code: str, period: str,
+                           last_trade_date: str, report: Dict) -> bool:
+        """写入分析结果缓存（INSERT OR REPLACE）"""
+        import json
+        if not last_trade_date or report is None:
+            return False
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO mystery_analysis_cache "
+                    "(stock_code, period, last_trade_date, report_json, "
+                    "created_at) VALUES (?,?,?,?,datetime('now'))",
+                    (stock_code, period, str(last_trade_date),
+                     json.dumps(report, ensure_ascii=False, default=str)))
+                conn.commit()
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ 分析缓存写入失败: {e}")
+                return False
             finally:
                 conn.close()
 

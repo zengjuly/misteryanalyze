@@ -36,34 +36,16 @@ def _get_all_a_shares():
     return []
 
 
-# ---------- 参数 ----------
-with st.sidebar:
-    st.subheader("⚙️ 扫描参数")
-    only_true = st.checkbox("只看真三振", value=False)
-    only_main = st.checkbox("只看主升浪", value=False)
-    min_score = st.slider("评分阈值", 0, 100, 85)
-    scope = st.radio("扫描范围", ["股票池（config）", "全部A股（慢）"])
-    if scope == "股票池（config）":
-        selected = st.multiselect("选择股票", stock_pool, default=stock_pool[:5])
-    else:
-        selected = None
-
-if st.button("🚀 开始扫描", type="primary", width="stretch"):
-    if scope == "股票池（config）" and not selected:
-        st.warning("请至少选择一只股票")
-        st.stop()
-    codes = selected if selected is not None else _get_all_a_shares()
-
+def _run_scan(codes):
+    """执行扫描循环（提取为函数，供缓存复用）"""
     feeder = get_feeder()
     logic = get_logic()
     results = []
+    total = len(codes)
     progress = st.progress(0.0, text="扫描中...")
     status = st.empty()
-    total = len(codes)
-
     # 大盘数据只取一次
     market_data = feeder.get_market_index()
-
     for i, code in enumerate(codes):
         try:
             status.info(f"⏳ 扫描 {i+1}/{total}: {code}")
@@ -74,7 +56,6 @@ if st.button("🚀 开始扫描", type="primary", width="stretch"):
             signal = logic.comprehensive_signal_analysis(
                 daily, weekly_data=weekly, market_data=market_data,
                 industry_data=None, industry_trend=None)
-            # 名称
             name = code
             try:
                 from data.baostock_client import BaostockClient
@@ -96,6 +77,54 @@ if st.button("🚀 开始扫描", type="primary", width="stretch"):
                           text=f"扫描 {i+1}/{total}: {code}")
     progress.empty()
     status.empty()
+    return results
+
+
+# ---------- 参数 ----------
+with st.sidebar:
+    st.subheader("⚙️ 扫描参数")
+    only_true = st.checkbox("只看真三振", value=False)
+    only_main = st.checkbox("只看主升浪", value=False)
+    min_score = st.slider("评分阈值", 0, 100, 85)
+    # 股票池选择器（docs/ui2.md 全局股票池）
+    from web.utils.session import load_watchlist
+    watchlist = load_watchlist()
+    pool_options = ["全市场A股", "核心自选池"] + \
+        (["自定义"] if watchlist else [])
+    scope = st.radio("扫描范围", pool_options)
+    st.caption(f"自选股 {len(watchlist)} 只")
+    if scope == "全市场A股":
+        selected = None
+    elif scope == "核心自选池":
+        selected = watchlist if watchlist else None
+        if not watchlist:
+            st.warning("自选股为空，请先在「真三振池」页添加")
+    else:
+        selected = st.multiselect("选择股票", stock_pool, default=stock_pool[:5])
+
+if st.button("🚀 开始扫描", type="primary", use_container_width=True):
+    if scope == "核心自选池" and not (watchlist or selected):
+        st.warning("自选股为空，请先添加")
+        st.stop()
+    codes = selected if selected is not None else _get_all_a_shares()
+    if not codes:
+        st.warning("无可扫描的股票")
+        st.stop()
+
+    # ===== 扫描结果缓存（docs/ui2.md: 行情未更新不重复扫描） =====
+    from db_manager import MysteryDB
+    db = MysteryDB()
+    from datetime import date
+    scan_key = str(date.today())
+    cached_scan = db.get_analysis_cache('__all__', 'full_scan', scan_key)
+    if cached_scan and cached_scan.get('results'):
+        st.success(f"⚡ 命中今日扫描缓存（{scan_key}，{len(cached_scan['results'])} 只）")
+        results = cached_scan['results']
+    else:
+        results = _run_scan(codes)
+        db.set_analysis_cache('__all__', 'full_scan', scan_key,
+                              {'results': results, 'date': scan_key,
+                               'scope': scope})
 
     # 过滤
     if only_true:
@@ -105,9 +134,8 @@ if st.button("🚀 开始扫描", type="primary", width="stretch"):
     results = [r for r in results if r['综合评分'] >= min_score]
     results.sort(key=lambda r: r['综合评分'], reverse=True)
 
-    # 保存扫描结果（真三振池数据源）
     save_scan_results(results)
-    st.success(f"✅ 扫描完成: {len(results)} 只符合条件（共 {total} 只）")
+    st.success(f"✅ 扫描完成: {len(results)} 只符合条件（共 {len(codes)} 只）")
     st.session_state['scan_results'] = results
     render_stock_table(results)
     st.info("💎 结果已保存，可在「真三振池」页面查看；"

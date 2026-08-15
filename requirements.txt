@@ -24,3 +24,4 @@ Jinja2>=3.0.0
 # Web 前端（docs/ui.md，Streamlit 多页面）
 streamlit>=1.40
 plotly>=5.20
+streamlit-searchbox>=0.1.20

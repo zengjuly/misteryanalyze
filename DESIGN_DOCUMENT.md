@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.12.0
+- **版本**: 1.13.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-15
 - **文档类型**: 系统设计文档
@@ -1045,6 +1045,39 @@ data_source:
 
 **验证**：AppTest 6/6 页面渲染 + 个股分析按钮点击完整链路（8 metric + K线图 +
 "分析完成"提示）；HTTP 200 实测启动成功
+
+### 4.10.1 Web 前端升级（docs/ui2.md）— ★★
+
+**① 个股分析升级**：
+- **模糊搜索**：streamlit-searchbox（开源组件），匹配代码/名称（`DataFeeder.get_all_stock_code_name`
+  从 db stock_industry_info 加载 5208 只代码-名称字典），返回 "sh600150 - 中国船舶" 格式
+- **Excel 对齐展示**：自适应平台（POC/上轨/下轨）+ 平台箱体（震荡区间）+
+  筹码分析（集中度/趋势）+ 主升浪8项指标对比表（✅/❌）+ 周/月K箱体（重采样后近N周期高低）
+- **财务数据**：FinancialStorage.load_latest → PE/PB/股息率/最新ROE 四卡片 +
+  近三年 ROE 历史表（load_history）
+- **K线图 v2**（kline_chart.py 重写）：3 行子图（蜡烛+MA+震荡区间矩形 /
+  成交量 / MACD 三线），日/周/月周期切换（kline_resampler 重采样），
+  震荡区间上沿/下沿/POC 以矩形+虚线绘制
+
+**② 分析结果缓存（mystery_analysis_cache 表）**：
+- 建表：`(stock_code, period, last_trade_date, report_json, created_at)` 联合主键
+- MysteryDB.get_analysis_cache / set_analysis_cache（JSON 序列化，INSERT OR REPLACE）
+- 个股分析：以 (code, 'daily', 最新K线日期) 为键，行情未更新直接复用（页面显示
+  "⚡ 命中分析缓存"）
+- 全量扫描：以 ('__all__', 'full_scan', 当日日期) 为键，当日重复扫描直接复用
+
+**③ 板块监控升级**：
+- 板块得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大倍数×0.3
+- Top15 横向条形图（Plotly Express）+ 全量排名表 + CSV 导出
+- 成分股钻取：对板块成分股逐一 comprehensive_signal_analysis，
+  真三振/评分≥85 龙头高亮 + 一键查看
+
+**④ 股票池配置**：
+- 全局股票池选择器（全市场A股 / 核心自选池 / 自定义），扫描页复用
+- 真三振池页模糊搜索添加自选股（streamlit-searchbox），watchlist.json 持久化
+
+**验证**：AppTest 6/6 渲染 + 缓存读写 5 项断言 + K线 v2（10 trace/MACD三线/4 shape）+
+代码-名称字典（5208 只）——17/17 通过
 
 ## 5. 接口设计
 
