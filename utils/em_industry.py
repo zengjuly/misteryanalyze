@@ -63,7 +63,13 @@ def fetch_em_industry() -> Dict:
         if code_map:
             logger.info(f"🏢 东财行业拉取完成: {len(code_map)} 只, "
                         f"{len(industry_codes)} 个行业")
+        # 完整性门槛: 东财接口不稳定（部分行业拉取失败），
+        # 不完整结果会污染行业数据 → 视为失败回退 baostock 保持一致性
+        if len(industry_codes) < 60 or len(code_map) < 3000:
+            logger.warning(f"⚠️ 东财行业拉取不完整（{len(industry_codes)}行业/"
+                           f"{len(code_map)}只），放弃回退 baostock")
+            return {}
         return {'code_map': code_map, 'industry_codes': industry_codes}
     except Exception as e:
         logger.warning(f"⚠️ 东财行业拉取异常（回退 baostock）: {str(e)[:80]}")
-        return {}
+        return {'code_map': {}, 'industry_codes': {}}
