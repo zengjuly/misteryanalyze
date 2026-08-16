@@ -9,7 +9,9 @@ Environment="PATH=/home/ai/ai_runner/venv/bin"
 Environment="MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db"
 Environment="TDX_VIPDOC_DIR=/home/ai/ai_runner/stock/data/tdx_vipdoc"
 Environment="SOURCE_REPORT_DIR=/home/ai/ai_runner/stock/data/logs/"
-ExecStart=/home/ai/ai_runner/venv/bin/streamlit run web/app.py --server.port 1888 --server.address :: --server.headless true
+# --server.address 127.0.0.1 --server.port 18881 仅本地监听，
+# 对外 HTTPS 由 Apache 反向代理（scripts/mystery-ssl.conf，复用 Nextcloud 证书）
+ExecStart=/home/ai/ai_runner/venv/bin/streamlit run web/app.py --server.port 18881 --server.address 127.0.0.1 --server.headless true
 Restart=always
 RestartSec=5
 

@@ -1169,6 +1169,17 @@ home优先/lday结构/财务隔离/财务新鲜/路径结构）——套件 56/5
 - **验证**：`ss` 显示 `*:1888`；本机/公网 IPv6 直连与 AAAA 域名均 HTTP 200；
   IPv4 不受影响；本机无防火墙拦截；DNS AAAA → 240e:3a3:601:55a0::e70 正常
 
+**⑩ HTTPS 部署（复用 Nextcloud 证书，用户要求）**：
+- **架构**：Apache2 反向代理（Nextcloud 同实例）——监听 **1888 端口 TLS**（原访问
+  端口不变，dual-stack IPv4+IPv6）→ 转发 `127.0.0.1:18881`（streamlit 改为仅本地绑定）
+- **证书**：`/etc/ssl/certs/nextcloud.crt` + `/etc/ssl/private/nextcloud.key`
+  （CN=zz.zzhappyxiaowu.dpdns.org，正好匹配访问域名）
+- **配置**：scripts/mystery-ssl.conf（Listen 1888 + SSLEngine + ProxyPass +
+  WebSocket 升级 Rewrite）；`a2enmod proxy_http`（AH01144 无协议处理器——必须启用）
+- **验证**：`https://zz.zzhappyxiaowu.dpdns.org:1888/` 与 `https://[240e:...]:1888/`
+  均 200，页面标题 Streamlit；证书 subject=zz.zzhappyxiaowu.dpdns.org
+- **注意**：证书为自签（O=MyOrg），浏览器首次访问需信任（与 Nextcloud 同证书同待遇）
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
