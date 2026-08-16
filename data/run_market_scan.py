@@ -130,13 +130,16 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
         adaptive = calculate_adaptive_lookback(df)
         adaptive_n = adaptive.get('adaptive_n', 30)
 
-        # 技术指标（轻量管线: MA + MACD 足够主升浪/三振/筹码/平台使用）
+        # 技术指标（轻量管线: MA + MACD + 量比 足够主升浪/三振/筹码/平台使用）
         # 完整 _calculate_all_indicators 每只 50s+（含量价/动量全管线），
         # 全市场扫描不可行 → 用轻量指标（docs/081601.md 扫描性能）
         from indicators.ma_indicators import MAIndicators
         from indicators.trend_indicators import TrendIndicators
+        from indicators.momentum_indicators import MomentumIndicators
         indicators = MAIndicators().calculate_ma(df)
         indicators = TrendIndicators().calculate_macd(indicators)
+        # 量比（technical_detail_capture 筹码/量比指标需要，缺失会抛 '量比' 异常）
+        indicators = MomentumIndicators().calculate_volume_ratio(indicators)
 
         # 自适应 VAP-ATR 平台
         from analysis.adaptive_platform import analyze_adaptive_platform
