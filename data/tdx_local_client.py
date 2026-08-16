@@ -132,6 +132,15 @@ class TdxLocalClient:
         # 日K文件缺失或末根K线超期 → 协议补充 → 失败回退在线源(akshare/baostock)
         from tdx_path_resolver import day_file_path, is_kline_fresh
         day_file = day_file_path(code, self.vipdoc_dir)
+        # 指数代码（sh.000xxx / sz.399xxx）本地 .day 通常不存在，且协议服务器
+        # 不可达（TCP超时15s+）→ 快速返回空走在线源，避免每次分析卡 15-90s
+        mkt = self._get_market(code)
+        is_index = (mkt == 'sh' and code.startswith('000')) or \
+                   (mkt == 'sz' and code.startswith('399'))
+        if is_index and not os.path.exists(day_file):
+            logger.info(f"[TDX本地-指数无本地数据→fallback] {code} 指数无 .day，"
+                        f"直接回退在线源")
+            return pd.DataFrame(columns=STANDARD_COLS)
         if not is_kline_fresh(day_file):
             logger.info(f"[TDX本地-过期→fallback] {code} 本地日K缺失或末根K线"
                         f"超期({day_file})，尝试协议补充")

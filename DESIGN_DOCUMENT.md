@@ -1145,6 +1145,18 @@ data_source:
 **单测**：tests/test_tdx_path_resolver.py 10 项（新鲜/过期/周末缓冲/文件缺失/
 home优先/lday结构/财务隔离/财务新鲜/路径结构）——套件 56/56 通过
 
+**⑧ 分析卡顿修复（指数获取优化，用户反馈"正在分析...一直没有结果"）**：
+- **根因**：get_market_index 每次分析都拉 3 个指数（sh.000001/sz.399001/sz.399006）
+  ——tdx_local 对指数代码无 .day → 协议客户端连行情服务器（TCP 15s+ 超时）× 重试3次
+  + akshare 退避（2+4+8s）→ 每指数 20-30s，3 个指数 90s+ → UI 卡死
+- **修复1**：tdx_local.get_daily_data 指数快速失败——sh.000xxx/sz.399xxx 无本地 .day
+  直接返回空走在线源（跳过协议重试），日志 `[TDX本地-指数无本地数据→fallback]`
+- **修复2**：DataFeeder.get_market_index db 缓存（指数日K upsert 至 stock_kline_data，
+  最新日期 3 天内直接复用 → 二次读取 0.11s，首次 25s 写缓存）
+- **修复3**：页面1 market_data 会话缓存（st.session_state，一次分析后复用）
+- **实测**：600000 全链路（日K/周K/指数/信号/财务/板块/缓存）10/10 通过，
+  指数缓存 0.11s；分析全缓存秒级返回
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

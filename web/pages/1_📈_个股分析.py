@@ -93,7 +93,12 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
                            f"行情未更新未重复分析）")
             else:
                 weekly = feeder.get_weekly(code)
-                market_data = feeder.get_market_index()
+                # 大盘指数会话内只拉一次（指数获取走在线源较慢，避免每次分析卡顿）
+                if 'market_data_cache' not in st.session_state:
+                    with st.spinner("加载大盘指数数据..."):
+                        st.session_state['market_data_cache'] = \
+                            feeder.get_market_index()
+                market_data = st.session_state['market_data_cache']
                 signal = logic.comprehensive_signal_analysis(
                     daily, weekly_data=weekly, market_data=market_data,
                     industry_data=None, industry_trend=None)

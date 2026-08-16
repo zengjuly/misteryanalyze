@@ -93,7 +93,7 @@ class DataFeeder:
             return None
 
     def get_market_index(self, codes: Dict[str, str] = None) -> Dict[str, pd.DataFrame]:
-        """获取主要指数日K
+        """获取主要指数日K（db缓存优先，二次读取毫秒级）
         :param codes: {指数名: 代码}，默认 上证指数/深证成指/创业板指
         :return: {指数名: DataFrame}
         """
@@ -101,7 +101,36 @@ class DataFeeder:
                           '创业板指': 'sz.399006'}
         result = {}
         for name, code in codes.items():
-            df = self.get_daily(code)
+            df = None
+            db_code = code if '.' in code else code
+            # 1. db 缓存（最新日期 3 天内直接复用，避免每次分析走在线源卡顿）
+            try:
+                from datetime import datetime, timedelta
+                from db_manager import MysteryDB
+                db = MysteryDB()
+                cached = db.load_kline(db_code, 'daily')
+                if cached is not None and not cached.empty:
+                    last = str(cached['date'].max())[:10]
+                    age = (datetime.now()
+                           - datetime.strptime(last, '%Y-%m-%d')).days
+                    if age <= 3:
+                        m = {'date': '日期', 'open': '开盘价', 'high': '最高价',
+                             'low': '最低价', 'close': '收盘价',
+                             'volume': '成交量', 'amount': '成交额',
+                             'turn': '换手率'}
+                        df = cached.rename(columns=m)
+            except Exception:
+                pass
+            # 2. 在线源拉取 + 写缓存
+            if df is None or df.empty:
+                df = self.get_daily(code)
+                if df is not None and not df.empty:
+                    try:
+                        from db_manager import MysteryDB
+                        MysteryDB().upsert_kline(df, db_code, 'daily',
+                                                 max_rows=1200)
+                    except Exception:
+                        pass
             if df is not None and not df.empty:
                 result[name] = df
         if not result:
