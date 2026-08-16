@@ -966,10 +966,19 @@ data_source:
 **④ 并发与同步优化（sync_all_market.py 增强）**：
 - **断点续传**：`--checkpoint` 或 config `sync.checkpoint_file`；JSON 记录已完成股票代码，
   中断后重新运行自动跳过（原子写入 .tmp + os.replace 防损坏）；全部完成时直接跳过
+- **断点参数感知（用户反馈修复，v1.15.x）**：断点文件记录 `days`/`periods` 元数据
+  `{"days": 2000, "periods": ["daily"], "done": [...]}`；再次运行参数与断点不一致
+  （如 `--days 1100` → `--days 2000`）→ 断点**自动失效全量重同步**（避免长历史被旧
+  断点跳过，用户反馈"改 --days 后全部 skipped"）；旧格式（纯 list）同样失效；
+  `--force` 可显式忽略断点；汇总写盘与增量写盘两处调用统一带元数据（曾遗漏导致
+  days=None 覆盖）
 - **进度条**：tqdm（`--no-progress` 关闭，tqdm 未安装自动降级日志进度）
 - **配置化线程**：config `sync.threads`（tdx_local=8 / akshare=4 / baostock=1——
   baostock 全局单 socket 必须串行），`--threads` 可覆盖
 - 配置（config.yaml sync 段）：threads / batch_size / checkpoint_file
+- **同步范围说明**：sync 仅负责行情 K 线（本地优先 .day + 增量路径，全量约 12 分钟）；
+  财务（PE/PB/ROE/股息率）与行业板块为**按需自动拉取**（FinancialStorage / DataFeeder，
+  页面分析时自动缓存）
 
 **⑤ 单元测试（tests/，新增，unittest 标准库）**：
 - `test_path_utils.py`：环境变量覆盖/配置兜底/默认兜底/相对转绝对

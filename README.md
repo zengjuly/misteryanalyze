@@ -167,25 +167,41 @@ python3 run_analysis.py --test
 # 指定周期（日/周/月线）
 /home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period weekly --days 1830
 
+# 更长历史（日线2000天≈8年）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 2000
+
 # 测试模式：仅同步前500只（快速验证）
 /home/ai/ai_runner/venv/bin/python data/sync_all_market.py --limit 500 --threads 4
 
 # 每日增量更新（闭市后）
 /home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 365
+
+# 忽略断点强制全量重同步（--days/--period 变更时断点自动失效，一般无需 --force）
+/home/ai/ai_runner/venv/bin/python data/sync_all_market.py --period daily --days 2000 --force
 ```
 
 参数说明：
 | 参数 | 说明 | 默认 |
 |---|---|---|
 | `--period` | 同步周期：daily/weekly/monthly | daily |
-| `--days` | 回溯天数（日线1100≈3年，周线1830≈5年，月线3650≈10年） | 按周期 |
+| `--days` | 回溯天数（日线1100≈3年，2000≈8年；周线1830≈5年，月线3650≈10年） | 按周期 |
 | `--threads` | 线程数。⚠️ baostock 为全局单 socket 连接，多线程并发会导致 utf-8 解码错误/数据交错，**默认读 config sync.threads（baostock=1 串行最稳定）**，最多建议 2-4 | config |
 | `--limit` | 仅同步前N只（测试用） | 全部 |
 | `--index` | 是否包含指数 | 否（仅股票） |
 | `--checkpoint` | 断点文件路径（JSON，中断后重新运行跳过已完成，支持续传） | config sync.checkpoint_file |
 | `--no-progress` | 关闭 tqdm 进度条 | 显示进度条 |
+| `--force` | 忽略断点强制全量重同步（一般无需：`--days`/`--period` 变更时断点自动失效） | 否 |
 
 > 系统已内置网络容错：数据包解码错误自动重试（3次+退避）、连接损坏自动重新登录重建。若网络弱导致部分股票返回空，可重新运行同步命令补齐（断点续传会自动跳过已完成）。
+>
+> 💡 **断点续传参数感知**：断点文件（sync_checkpoint.json）记录 `days`/`periods` 元数据。
+> 再次运行若参数与断点不一致（如 `--days 1100` → `--days 2000`），断点**自动失效并全量重同步**
+> （避免长历史被旧断点跳过）；参数一致则续传跳过已完成。旧格式断点（无元数据）同样自动失效。
+>
+> 💡 **同步范围说明**：`sync_all_market.py` 负责**行情 K 线**同步（本地优先 .day + 增量路径，
+> 全量 5208 只首次建缓存约 12 分钟）；**财务**（PE/PB/ROE/股息率）与**行业板块分类**为
+> **按需自动拉取**——个股分析页打开时自动获取并缓存（FinancialStorage / DataFeeder），
+> 无需单独同步命令。
 >
 > 💡 **性能说明**：同步优先走**通达信本地数据源**（.day 文件）+ 增量路径（缓存直读，毫秒级），
 > 仅本地缺失时才回退 akshare/baostock 网络。全量 5208 只首次建缓存约 **12 分钟**；
