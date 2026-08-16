@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.14.0
+- **版本**: 1.15.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-15
+- **更新日期**: 2026-08-16
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1179,6 +1179,45 @@ home优先/lday结构/财务隔离/财务新鲜/路径结构）——套件 56/5
 - **验证**：`https://zz.zzhappyxiaowu.dpdns.org:1888/` 与 `https://[240e:...]:1888/`
   均 200，页面标题 Streamlit；证书 subject=zz.zzhappyxiaowu.dpdns.org
 - **注意**：证书为自签（O=MyOrg），浏览器首次访问需信任（与 Nextcloud 同证书同待遇）
+
+### 4.12 Web/扫描增强（docs/081601.md，v1.15.0）— ★★
+
+**① 个股分析 K 线升级**：
+- **1000 交易日**：页面分析拉长历史（start_date=4 年前，会话内 session 缓存 kline_long）；
+  日线 max_bars=1000、周线 200（对应窗口）、月线 50——plot_kline 新增 max_bars 参数
+- **MA377/MA610**：ma_indicators 默认 periods 扩为 [5,10,20,60,250,377,610]；
+  kline_chart MA_LIST/MA_COLORS 同步（MA377 紫 / MA610 青绿）
+- **EMA20**：新增 `calculate_ema`（ewm span=20 adjust=False），K 线橙色虚线叠加
+
+**② 通达信行业板块（tdx_block_client.py 新建）**：
+- mootdx Reader.block 读取 T0002/hq_cache/block_gn.dat（概念）/block.dat（行业）/
+  incon.dat 反查；`to_code_map` 转 {code: 板块名}（市场前缀+6位）
+- DataFeeder.get_industry_data **TDX 优先**（0 优先级，成功自动填充 db）→
+  东财 → baostock 兜底；本机无 TDX_HOME/block 文件 → 自然降级（保持现有分类）
+- get_block_data 已有（T0002 blocknew/*.blk 解析）
+
+**③ 自选股剥离（watchlist_manager.py + 页面6）**：
+- SQLite watchlist 表（code/name/add_time/source/note）独立管理；
+  `WatchlistManager`（add/remove/list/codes/exists，code 自动规范化 sh.600150）
+- **新页面 6_⭐_自选股**：模糊搜索添加（st_searchbox——注意签名首个参数是搜索
+  函数、勿放 form 内）+ 来源筛选 + 删除/清空 + CSV 导出
+- 真三振池（页面4）**剥离自选管理**，只保留展示 + 一键加入（source='真三振'）；
+  session.load_watchlist 统一走 WatchlistManager（旧 JSON 兼容）
+
+**④ 全市场扫描后台运行（run_market_scan 增强）**：
+- **使能三振/主升浪**：`enable_three_strike`/`enable_main_wave` 参数；三振前置
+  一次构建（大盘指数缓存 + 行业归属 map + 板块强度 map），每只股票用板块得分
+  >0 判行业向好 → three_resonance_analysis 四维；结果含 三振评分/真三振/三振级别
+- **性能关键修复**：完整指标管线 `_calculate_all_indicators` 每只 50s+（含量价/
+  动量）→ 全市场扫描不可行；改用**轻量指标**（MA + MACD，每只 <1s）——
+  主升浪/三振/筹码/平台所需列已足够；VAP 平台 2s/只为主开销
+- **后台任务**：`run_market_scan_background`（scan_jobs 表 + daemon 线程），
+  返回 job_id；页面3 提交后轮询状态/进度 → 完成读 CSV 展示下载；
+  系统状态页可查看任务
+- 实测：3 只含前置 38.8s；全市场 5000 只预计 ~4 小时（后台运行）
+
+**验证**：单测 58/58、081601 功能 17/17（MA377/610/EMA20/max_bars/watchlist CRUD/
+tdx_block 降级/后台任务）、页面渲染 7/7（含新页面6）
 
 ## 5. 接口设计
 

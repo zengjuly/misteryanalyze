@@ -73,22 +73,33 @@ def save_scan_results(results: list):
 
 
 def load_watchlist():
-    """读取自选股列表（JSON）"""
-    import json
-    path = os.path.join(_JSON_DIR, 'watchlist.json')
-    if os.path.exists(path):
-        try:
-            with open(path, encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    """读取自选股代码列表（docs/081601.md §三: SQLite WatchlistManager 统一）"""
+    try:
+        from data.watchlist_manager import WatchlistManager
+        return WatchlistManager().codes()
+    except Exception:
+        # 兼容旧 JSON 数据
+        import json
+        path = os.path.join(_JSON_DIR, 'watchlist.json')
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return []
+        return []
 
 
 def save_watchlist(watchlist: list):
-    """保存自选股列表"""
-    import json
-    os.makedirs(_JSON_DIR, exist_ok=True)
-    path = os.path.join(_JSON_DIR, 'watchlist.json')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(watchlist, f, ensure_ascii=False, indent=1)
+    """保存自选股列表（SQLite WatchlistManager + 旧 JSON 兼容）"""
+    try:
+        from data.watchlist_manager import WatchlistManager
+        wm = WatchlistManager()
+        for c in watchlist:
+            wm.add(c, source='manual')
+    except Exception:
+        import json
+        os.makedirs(_JSON_DIR, exist_ok=True)
+        path = os.path.join(_JSON_DIR, 'watchlist.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(watchlist, f, ensure_ascii=False, indent=1)

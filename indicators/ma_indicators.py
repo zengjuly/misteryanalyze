@@ -15,11 +15,11 @@ class MAIndicators:
         """
         计算均线
         :param data: 包含收盘价的数据
-        :param periods: 均线周期列表，默认[5, 10, 20, 60, 250]
+        :param periods: 均线周期列表，默认[5, 10, 20, 60, 250, 377, 610]（docs/081601.md）
         :return: 添加均线列的数据
         """
         if periods is None:
-            periods = [5, 10, 20, 60, 250]
+            periods = [5, 10, 20, 60, 250, 377, 610]
         
         try:
             result = data.copy()
@@ -35,6 +35,25 @@ class MAIndicators:
             
         except Exception as e:
             self.logger.error(f"❌ 计算均线异常: {e}")
+            return data
+    
+    def calculate_ema(self, data: pd.DataFrame, periods: List[int] = None) -> pd.DataFrame:
+        """计算指数移动平均 EMA（默认 EMA20，docs/081601.md）
+        :param data: 包含收盘价的数据
+        :param periods: EMA 周期列表，默认[20]
+        :return: 添加 EMA{p} 列的数据
+        """
+        if periods is None:
+            periods = [20]
+        try:
+            result = data.copy()
+            close_col = '收盘价' if '收盘价' in result.columns else 'close'
+            for p in periods:
+                result[f'EMA{p}'] = result[close_col].ewm(span=p, adjust=False).mean()
+            self.logger.info(f"✅ 完成 EMA 计算: {periods}")
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ 计算 EMA 异常: {e}")
             return data
     
     def calculate_ma_slope(self, data: pd.DataFrame, period: int = 5, slope_period: int = 5) -> pd.DataFrame:

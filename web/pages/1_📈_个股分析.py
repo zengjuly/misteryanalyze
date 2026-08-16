@@ -194,16 +194,33 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
                 st.markdown(f"**月线箱体**（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
                             f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
 
-            # ---------- 4. K线图（一次分析完成日/周/月K，docs/ui2.md） ----------
-            st.subheader("📊 K线图（MACD + 震荡区间，日/周/月一次完成）")
+            # ---------- 4. K线图（最近1000交易日 + MA377/610 + EMA20，docs/081601.md） ----------
+            st.subheader("📊 K线图（1000交易日 + MA377/610 + EMA20，日/周/月一次完成）")
             from indicators.ma_indicators import MAIndicators
 
-            def _prep_kline(kdf, box_dict):
-                """补均线 + 绘制"""
+            # 长历史K线（1000交易日；缓存不足时在线源拉取，会话内复用）
+            kkey = f'kline_long_{code}'
+            if kkey not in st.session_state:
+                from datetime import datetime, timedelta
+                start4y = (datetime.now() - timedelta(days=365 * 4)
+                           ).strftime('%Y-%m-%d')
+                long_df = feeder.get_daily(code, start_date=start4y)
+                if long_df is None or long_df.empty:
+                    long_df = daily
+                st.session_state[kkey] = long_df
+            long_df = st.session_state[kkey]
+
+            def _prep_kline(kdf, box_dict, max_bars=1000):
+                """补 MA377/610 + EMA20 后绘制（docs/081601.md）"""
                 kdf = kdf.copy()
-                if 'MA5' not in kdf.columns:
+                if len(kdf) > max_bars:
+                    kdf = kdf.tail(max_bars)
+                if 'MA377' not in kdf.columns:
                     kdf = MAIndicators().calculate_ma(kdf)
-                return plot_kline(kdf, title=f"{code} {name}", box=box_dict)
+                if 'EMA20' not in kdf.columns:
+                    kdf = MAIndicators().calculate_ema(kdf)
+                return plot_kline(kdf, title=f"{code} {name}", box=box_dict,
+                                  max_bars=max_bars)
 
             # 日K箱体（近20日震荡区间）
             day_box = {'上沿': float(daily['最高价'].tail(20).max()),
@@ -211,28 +228,35 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
                        'POC': ap.get('POC') if 'ap' in dir() else None}
             tab_d, tab_w, tab_m = st.tabs(["📅 日线", "📆 周线", "🗓️ 月线"])
             with tab_d:
-                st.plotly_chart(_prep_kline(daily.tail(150), day_box),
+                st.plotly_chart(_prep_kline(long_df, day_box, max_bars=1000),
                                 width="stretch")
+                st.caption(f"日线: 最近 {min(len(long_df), 1000)} 个交易日")
             with tab_w:
-                if wk is not None and len(wk):
-                    w_hi = float(wk['最高价'].tail(20).max())
-                    w_lo = float(wk['最低价'].tail(20).min())
-                    st.plotly_chart(_prep_kline(wk.tail(80),
-                                                {'上沿': w_hi, '下沿': w_lo}),
+                wk_long = rs.resample(long_df, 'weekly') if long_df is not None else None
+                if wk_long is not None and len(wk_long):
+                    w_hi = float(wk_long['最高价'].tail(20).max())
+                    w_lo = float(wk_long['最低价'].tail(20).min())
+                    st.plotly_chart(_prep_kline(wk_long,
+                                                {'上沿': w_hi, '下沿': w_lo},
+                                                max_bars=200),
                                     width="stretch")
-                    st.caption(f"周线箱体（近20周）: {w_lo:.2f} ~ {w_hi:.2f} "
-                               f"| 最新 {wk['收盘价'].iloc[-1]:.2f}")
+                    st.caption(f"周线（对应日线窗口，最近200周）: "
+                               f"{w_lo:.2f} ~ {w_hi:.2f} "
+                               f"| 最新 {wk_long['收盘价'].iloc[-1]:.2f}")
                 else:
                     st.info("周线数据不足")
             with tab_m:
-                if mo is not None and len(mo):
-                    m_hi = float(mo['最高价'].tail(12).max())
-                    m_lo = float(mo['最低价'].tail(12).min())
-                    st.plotly_chart(_prep_kline(mo.tail(48),
-                                                {'上沿': m_hi, '下沿': m_lo}),
+                mo_long = rs.resample(long_df, 'monthly') if long_df is not None else None
+                if mo_long is not None and len(mo_long):
+                    m_hi = float(mo_long['最高价'].tail(12).max())
+                    m_lo = float(mo_long['最低价'].tail(12).min())
+                    st.plotly_chart(_prep_kline(mo_long,
+                                                {'上沿': m_hi, '下沿': m_lo},
+                                                max_bars=50),
                                     width="stretch")
-                    st.caption(f"月线箱体（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
-                               f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
+                    st.caption(f"月线（对应日线窗口，最近50月）: "
+                               f"{m_lo:.2f} ~ {m_hi:.2f} "
+                               f"| 最新 {mo_long['收盘价'].iloc[-1]:.2f}")
                 else:
                     st.info("月线数据不足")
 

@@ -91,11 +91,23 @@ def load_local_cached_tickers(engine: MysteryDataEngine,
 
 
 def scan_single_stock(engine: MysteryDataEngine, code: str,
-                      period: str = 'daily') -> dict:
+                      period: str = 'daily',
+                      enable_three_strike: bool = True,
+                      enable_main_wave: bool = True,
+                      market_data: dict = None,
+                      sector_map: dict = None,
+                      ind_map: dict = None,
+                      sys_obj=None) -> dict:
     """
-    扫描单只股票：自适应窗口 + VAP-ATR + 主升浪指标 + 信号捕获
+    扫描单只股票：自适应窗口 + VAP-ATR + 主升浪指标 + 三振共振 + 信号捕获
     :param engine: 数据引擎
     :param code: 股票代码
+    :param enable_three_strike: 使能三振共振（docs/081601.md）
+    :param enable_main_wave: 使能主升浪8项
+    :param market_data: 大盘指数 {指数名: df}（扫描前置构建一次）
+    :param sector_map: 板块得分 {板块名: 得分}（扫描前置构建一次）
+    :param ind_map: 行业归属 {code: 行业名}（扫描前置构建一次）
+    :param sys_obj: StockAnalysisSystem 实例（循环外构造一次，避免每只重建）
     :return: 分析结果字典
     """
     from main import StockAnalysisSystem
@@ -118,18 +130,42 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
         adaptive = calculate_adaptive_lookback(df)
         adaptive_n = adaptive.get('adaptive_n', 30)
 
-        # 技术指标计算（复用系统指标管线）
-        sys = StockAnalysisSystem('config/config.yaml')
-        indicators = sys._calculate_all_indicators({'code': {'daily': df}})['code']
+        # 技术指标（轻量管线: MA + MACD 足够主升浪/三振/筹码/平台使用）
+        # 完整 _calculate_all_indicators 每只 50s+（含量价/动量全管线），
+        # 全市场扫描不可行 → 用轻量指标（docs/081601.md 扫描性能）
+        from indicators.ma_indicators import MAIndicators
+        from indicators.trend_indicators import TrendIndicators
+        indicators = MAIndicators().calculate_ma(df)
+        indicators = TrendIndicators().calculate_macd(indicators)
 
         # 自适应 VAP-ATR 平台
         from analysis.adaptive_platform import analyze_adaptive_platform
         platform = analyze_adaptive_platform(indicators, code)
 
-        # 主升浪8项指标（行业趋势暂用None，全量扫描无板块实时数据）
+        # 主升浪8项指标（docs/081601.md: 使能主升浪）
         from analysis.mystery_logic import MysteryLogic
         ml = MysteryLogic()
-        checklist = ml.main_bull_wave_checklist(indicators, industry_trend=None)
+        checklist = {'满足数量': 0, '综合判断': '未知', '详情': []}
+        if enable_main_wave:
+            checklist = ml.main_bull_wave_checklist(indicators,
+                                                    industry_trend=None)
+
+        # 三振共振四维分析（docs/081601.md: 使能三振；行业趋势用板块得分）
+        three = {}
+        if enable_three_strike:
+            try:
+                industry_trend = None
+                if sector_map:
+                    # 该股所属行业板块得分 > 0 视为行业向好（ind_map 前置构建）
+                    ind_name = (ind_map or {}).get(
+                        code if '.' in code else (code[:2] + '.' + code[2:]))
+                    if ind_name and ind_name in sector_map:
+                        industry_trend = sector_map[ind_name] > 0
+                three = ml.three_resonance_analysis(
+                    indicators, market_data=market_data,
+                    industry_data=None, industry_trend=industry_trend)
+            except Exception as e:
+                logger.debug(f"{code} 三振分析降级: {str(e)[:60]}")
 
         # 信号捕获: VAP-ATR突破 / 筹码低位共振
         signals = []
@@ -156,6 +192,11 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
             '信号': '、'.join(signals) if signals else '无',
             '最新价': float(df['收盘价'].iloc[-1]) if '收盘价' in df.columns else None,
         }
+        # 三振结果（docs/081601.md: 扫描结果显示真三振/评分/级别）
+        if three:
+            result['三振评分'] = three.get('共振评分')
+            result['真三振'] = three.get('真三振')
+            result['三振级别'] = three.get('共振级别')
         return result
     except Exception as e:
         logger.warning(f"⚠️ {code} 扫描异常: {e}")
@@ -164,7 +205,9 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
 
 def run_market_scan(limit: int = None, period: str = 'daily',
                     sync_first: bool = False, top_n: int = 20,
-                    output_dir: str = None) -> dict:
+                    output_dir: str = None,
+                    enable_three_strike: bool = True,
+                    enable_main_wave: bool = True) -> dict:
     """
     全量扫描分析主函数
     :param limit: 扫描股票数量限制
@@ -172,6 +215,8 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     :param sync_first: 是否先同步数据
     :param top_n: 生成报告的Top N（按信号数/评分排序）
     :param output_dir: 输出目录（默认config中的output_dir）
+    :param enable_three_strike: 使能三振共振分析（docs/081601.md 用户要求）
+    :param enable_main_wave: 使能主升浪8项分析
     """
     start_time = time.time()
     engine = MysteryDataEngine()
@@ -180,11 +225,39 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     codes = load_local_cached_tickers(engine, period, limit=limit,
                                       force_sync=sync_first)
 
-    # 2. 逐只扫描（单线程，避免baostock并发问题）
+    # 1.5 三振前置数据（一次性构建，docs/081601.md: 使能三振）
+    market_data = {}
+    sector_map = {}
+    ind_map = {}
+    if enable_three_strike:
+        try:
+            import yaml
+            from utils.data_feeder import DataFeeder
+            cfg = yaml.safe_load(open(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', 'config', 'config.yaml')))
+            feeder = DataFeeder(cfg)
+            market_data = feeder.get_market_index()
+            ind_map = feeder.get_industry_data().get('code_map', {})
+            # 板块强度（db行业分类 + 缓存K线）→ 个股行业趋势判定
+            from web.pages_util import build_sector_strength_map
+            sector_map = build_sector_strength_map()
+            logger.info(f"🧭 三振前置: 指数 {list(market_data.keys())}, "
+                        f"行业归属 {len(ind_map)} 只, "
+                        f"板块强度 {len(sector_map)} 个")
+        except Exception as e:
+            logger.warning(f"⚠️ 三振前置数据构建失败（三振降级）: {e}")
+
+    # 2. 逐只扫描（单线程，避免baostock并发问题；轻量指标每只 <1s）
     logger.info(f"🔍 开始全量扫描 {len(codes)} 只股票...")
     results = []
     for i, code in enumerate(codes, 1):
-        r = scan_single_stock(engine, code, period)
+        r = scan_single_stock(engine, code, period,
+                              enable_three_strike=enable_three_strike,
+                              enable_main_wave=enable_main_wave,
+                              market_data=market_data,
+                              sector_map=sector_map,
+                              ind_map=ind_map)
         results.append(r)
         if i % 100 == 0 or i == len(codes):
             logger.info(f"⏳ 扫描进度: {i}/{len(codes)}")
@@ -258,11 +331,77 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         '扫描数': len(results),
         '含信号': len(signal_stocks),
         'VAP-ATR突破': len(breakout_stocks),
+        '真三振数': len([r for r in results if r.get('真三振')]),
         '报告': txt_path,
         '明细': csv_path,
         '耗时': round(elapsed, 1),
         'stats': stats,
     }
+
+
+def run_market_scan_background(limit: int = None, period: str = 'daily',
+                               sync_first: bool = False, top_n: int = 20,
+                               output_dir: str = None,
+                               enable_three_strike: bool = True,
+                               enable_main_wave: bool = True) -> str:
+    """后台运行全市场扫描（docs/081601.md §四: 线程 + scan_jobs 状态表）
+    :return: job_id（供 Web 页轮询）
+    """
+    import sqlite3
+    import threading
+    import uuid
+    from data.db_manager import DEFAULT_DB_PATH
+
+    job_id = str(uuid.uuid4())[:8]
+    with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS scan_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT,
+                progress REAL,
+                result_path TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                message TEXT
+            )
+        ''')
+        conn.execute(
+            'INSERT INTO scan_jobs (job_id, status, progress, start_time, message) '
+            'VALUES (?, ?, ?, ?, ?)',
+            (job_id, 'running', 0.0, datetime.now().isoformat(),
+             f"扫描 {period} 周期" + ("（三振）" if enable_three_strike else "")))
+        conn.commit()
+
+    def _worker():
+        try:
+            result = run_market_scan(
+                limit=limit, period=period, sync_first=sync_first,
+                top_n=top_n, output_dir=output_dir,
+                enable_three_strike=enable_three_strike,
+                enable_main_wave=enable_main_wave)
+            with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+                conn.execute(
+                    'UPDATE scan_jobs SET status=?, progress=?, result_path=?, '
+                    'end_time=?, message=? WHERE job_id=?',
+                    ('finished', 1.0, result.get('明细', ''),
+                     datetime.now().isoformat(),
+                     f"完成: 扫描{result.get('扫描数', 0)}只, "
+                     f"信号{result.get('含信号', 0)}, "
+                     f"真三振{result.get('真三振数', 0)}, "
+                     f"耗时{result.get('耗时', 0)}s", job_id))
+                conn.commit()
+        except Exception as e:
+            with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+                conn.execute(
+                    'UPDATE scan_jobs SET status=?, message=? WHERE job_id=?',
+                    ('failed', str(e)[:200], job_id))
+                conn.commit()
+            logger.error(f"❌ 后台扫描失败 {job_id}: {e}")
+
+    t = threading.Thread(target=_worker, daemon=True, name=f'scan-{job_id}')
+    t.start()
+    logger.info(f"🚀 后台扫描任务已提交: {job_id}")
+    return job_id
 
 
 if __name__ == '__main__':

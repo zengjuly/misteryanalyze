@@ -9,9 +9,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-MA_LIST = ['MA5', 'MA10', 'MA20', 'MA60', 'MA250']
+MA_LIST = ['MA5', 'MA10', 'MA20', 'MA60', 'MA250', 'MA377', 'MA610']
 MA_COLORS = {'MA5': '#f39c12', 'MA10': '#e74c3c', 'MA20': '#3498db',
-             'MA60': '#9b59b6', 'MA250': '#2c3e50'}
+             'MA60': '#9b59b6', 'MA250': '#2c3e50',
+             'MA377': '#8e44ad', 'MA610': '#16a085'}
+EMA_LIST = ['EMA20']
+EMA_COLORS = {'EMA20': '#e67e22'}  # 橙色虚线区分
 UP, DOWN = '#e74c3c', '#2ecc71'  # A股红涨绿跌
 
 
@@ -28,13 +31,16 @@ def _ensure_macd(df: pd.DataFrame) -> pd.DataFrame:
 
 def plot_kline(df: pd.DataFrame, title: str = "K线",
                box: dict = None, with_volume: bool = True,
-               height: int = 720) -> go.Figure:
+               height: int = 720, max_bars: int = 1000) -> go.Figure:
     """绘制带均线/MACD/震荡区间的K线图
     :param df: 含 日期/开盘价/最高价/最低价/收盘价（可选 MA*/MACD*）
     :param box: {'上沿': x, '下沿': y, 'POC': z} 震荡区间（K线图矩形）
+    :param max_bars: 最多显示最近 N 根（docs/081601.md: 日1000/周200/月50）
     """
     if df is None or df.empty:
         return go.Figure()
+    if len(df) > max_bars:
+        df = df.tail(max_bars).copy()
     df = _ensure_macd(df)
     rows = 3 if 'MACD' in df.columns else (2 if (with_volume and '成交量' in df.columns) else 1)
     if rows == 3:
@@ -57,6 +63,14 @@ def plot_kline(df: pd.DataFrame, title: str = "K线",
             fig.add_trace(go.Scatter(
                 x=df['日期'], y=df[ma], mode='lines', name=ma,
                 line=dict(width=1.1, color=MA_COLORS.get(ma, '#888')),
+            ), row=1, col=1)
+    # EMA 曲线（docs/081601.md: EMA20 橙色虚线）
+    for ema in EMA_LIST:
+        if ema in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df['日期'], y=df[ema], mode='lines', name=ema,
+                line=dict(width=1.5, color=EMA_COLORS.get(ema, '#e67e22'),
+                          dash='dash'),
             ), row=1, col=1)
     # 震荡区间矩形（docs/ui2.md: 在K线图中绘制）
     if box and box.get('上沿') and box.get('下沿'):

@@ -162,6 +162,31 @@ class DataFeeder:
         :param refresh: 强制从在线源刷新行业分类
         :return: {'code_map': {code: 行业名}, 'industry_codes': {行业名: [codes]}}
         """
+        # 0. TDX 本地板块优先（docs/081601.md §二: 通达信行业板块）
+        #    本机无 TDX_HOME/block 文件 → 返回空 → 继续 db 缓存/在线源
+        try:
+            from tdx_block_client import TdxBlockClient
+            tbc = TdxBlockClient()
+            blocks = tbc.get_industry_blocks()
+            if blocks is not None and not blocks.empty:
+                code_map = tbc.to_code_map(blocks)
+                if code_map:
+                    try:
+                        from db_manager import MysteryDB
+                        MysteryDB().update_industries(code_map)
+                        logger.info(f"🏢 通达信行业板块已填充 db: "
+                                    f"{len(code_map)} 只")
+                    except Exception as e:
+                        logger.warning(f"⚠️ 通达信板块填充 db 失败: {e}")
+                    industry_codes = {}
+                    for c, ind in code_map.items():
+                        industry_codes.setdefault(str(ind), []).append(c)
+                    return {'code_map': code_map,
+                            'industry_codes': industry_codes,
+                            'source': 'tdx'}
+        except Exception as e:
+            logger.debug(f"TDX 板块读取跳过: {str(e)[:60]}")
+
         # 1. 优先 db 缓存
         if not refresh:
             try:

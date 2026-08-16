@@ -125,8 +125,62 @@ with st.sidebar:
                        f"（{len(selected)} 只成分股）")
     else:
         st.caption("行业板块数据不可用（可先打开板块监控页触发填充）")
+    # 后台扫描参数（docs/081601.md §四: 后台运行 + 使能三振/主升浪）
+    st.subheader("🖥️ 后台扫描")
+    bg_enable_3z = st.checkbox("使能三振分析", value=True)
+    bg_enable_mw = st.checkbox("使能主升浪", value=True)
+    if st.button("🚀 提交后台扫描", type="primary", width="stretch"):
+        from data.run_market_scan import run_market_scan_background
+        bg_codes = selected if selected is not None else None
+        limit = len(bg_codes) if bg_codes else None
+        job_id = run_market_scan_background(
+            limit=limit, period='daily', sync_first=False, top_n=20,
+            enable_three_strike=bg_enable_3z,
+            enable_main_wave=bg_enable_mw)
+        st.session_state['scan_job_id'] = job_id
+        st.success(f"🚀 后台任务已提交: {job_id}（可在下方查看进度，"
+                   f"或到 ⚙️ 系统状态页查看）")
 
-if st.button("🚀 开始扫描", type="primary", use_container_width=True):
+# ===== 后台任务状态轮询（docs/081601.md §四） =====
+if 'scan_job_id' in st.session_state:
+    st.divider()
+    st.subheader("🖥️ 后台扫描任务")
+    import sqlite3
+    from data.db_manager import DEFAULT_DB_PATH
+    job_id = st.session_state['scan_job_id']
+    try:
+        with sqlite3.connect(DEFAULT_DB_PATH) as conn:
+            row = conn.execute(
+                'SELECT status, progress, message, result_path, start_time '
+                'FROM scan_jobs WHERE job_id=?', (job_id,)).fetchone()
+    except Exception:
+        row = None
+    if row:
+        status, progress, message, result_path, start_time = row
+        st.progress(progress or 0, text=f"状态: {status} | {message}")
+        st.caption(f"任务ID: {job_id} | 提交时间: {start_time}")
+        if status == 'finished':
+            st.success("✅ 扫描完成")
+            # 读 CSV 展示（run_market_scan 输出）
+            try:
+                import pandas as pd
+                df = pd.read_csv(result_path)
+                st.dataframe(df, width="stretch")
+                st.download_button("⬇️ 下载明细 CSV", df.to_csv(
+                    index=False).encode('utf-8-sig'),
+                    file_name=f"scan_{job_id}.csv", mime="text/csv")
+            except Exception as e:
+                st.info(f"明细读取失败: {e}")
+            st.session_state.pop('scan_job_id', None)
+        elif status == 'failed':
+            st.error(f"❌ 任务失败: {message}")
+            st.session_state.pop('scan_job_id', None)
+        else:
+            st.info("⏳ 后台扫描运行中... 点击任意位置自动刷新，"
+                    "或等待完成后展示结果")
+            # 自动刷新（streamlit 交互触发 rerun）
+
+if st.button("🚀 开始扫描", type="primary", width="stretch"):
     if scope == "核心自选池" and not (watchlist or selected):
         st.warning("自选股为空，请先添加")
         st.stop()
