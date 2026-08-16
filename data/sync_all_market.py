@@ -260,9 +260,10 @@ def sync_all_market(periods: list = None, days: int = None,
                 logger.info(f"⏳ 进度: {done}/{total} "
                             f"(成功{progress['ok']} 失败{progress['fail']})")
 
-    # 4. 汇总（最后写一次断点）
+    # 4. 汇总（最后写一次断点，含参数元数据）
     if checkpoint_file:
-        _save_checkpoint(checkpoint_file, done_codes)
+        _save_checkpoint(checkpoint_file, done_codes,
+                         days=days, periods=periods)
         logger.info(f"📌 断点已保存: {checkpoint_file} "
                     f"({len(done_codes)} 只完成)")
     elapsed = time.time() - start_time
