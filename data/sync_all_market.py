@@ -126,14 +126,20 @@ def _load_config() -> dict:
         return {}
 
 
-def _save_checkpoint(checkpoint_file: str, done_codes: set):
-    """写断点文件（已完成股票代码列表）"""
+def _save_checkpoint(checkpoint_file: str, done_codes: set,
+                     days: int = None, periods: list = None):
+    """写断点文件（docs/step3.md: 已完成股票代码列表 + 同步参数元数据）
+    元数据记录 days/periods——参数变更时断点失效（避免 --days 2000 被
+    --days 1100 的断点跳过，用户反馈修复）
+    """
     try:
         os.makedirs(os.path.dirname(os.path.abspath(checkpoint_file)),
                     exist_ok=True)
+        payload = {'days': days, 'periods': periods,
+                   'done': sorted(done_codes)}
         tmp = checkpoint_file + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(sorted(done_codes), f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, checkpoint_file)  # 原子替换，避免中断损坏
     except Exception as e:
         logger.warning(f"⚠️ 断点文件写入失败: {e}")
@@ -143,7 +149,8 @@ def sync_all_market(periods: list = None, days: int = None,
                     threads: int = None, limit: int = None,
                     include_index: bool = False,
                     checkpoint_file: str = None,
-                    progress_bar: bool = True) -> dict:
+                    progress_bar: bool = True,
+                    force: bool = False) -> dict:
     """
     全量同步主函数（断点续传 + 进度条 + 配置化线程，docs/step3.md）
     :param periods: 周期列表 ['daily','weekly','monthly']
@@ -152,8 +159,10 @@ def sync_all_market(periods: list = None, days: int = None,
                     单socket连接，多线程并发会导致解码错误，默认1=串行最稳定）
     :param limit: 仅同步前N只（测试用）
     :param include_index: 是否包含指数
-    :param checkpoint_file: 断点文件路径（JSON，记录已完成股票，中断后续传）
+    :param checkpoint_file: 断点文件路径（JSON，记录已完成股票，中断后续传；
+                            含 days/periods 元数据，参数变更自动失效）
     :param progress_bar: 是否显示tqdm进度条
+    :param force: 忽略断点强制全量同步（--force）
     """
     start_time = time.time()
     cfg = _load_config()
@@ -182,15 +191,31 @@ def sync_all_market(periods: list = None, days: int = None,
         codes = codes[:limit]
         logger.info(f"🔒 测试模式: 仅同步前 {limit} 只")
 
-    # 2. 断点续传：跳过已完成
+    # 2. 断点续传：跳过已完成（docs/step3.md）
+    # 参数感知（用户反馈修复）: checkpoint 带 days/periods 元数据，
+    # 本次参数与断点不一致 → 断点失效全量重同步；旧格式(纯list)同样失效
     done_codes = set()
-    if checkpoint_file and os.path.exists(checkpoint_file):
+    if checkpoint_file and os.path.exists(checkpoint_file) and not force:
         try:
             with open(checkpoint_file, encoding='utf-8') as f:
-                done_codes = set(json.load(f))
-            logger.info(f"📌 断点续传: 跳过已完成的 {len(done_codes)} 只")
+                raw = json.load(f)
+            if isinstance(raw, dict) and 'done' in raw:
+                cp_days = raw.get('days')
+                cp_periods = raw.get('periods')
+                if cp_days is not None and int(cp_days) == int(days) \
+                        and sorted(cp_periods or []) == sorted(periods):
+                    done_codes = set(raw['done'])
+                    logger.info(f"📌 断点续传: 跳过已完成的 {len(done_codes)} 只 "
+                                f"(days={cp_days}, periods={cp_periods})")
+                else:
+                    logger.info(f"📌 断点参数不匹配(days={cp_days}≠{days} 或 "
+                                f"periods={cp_periods}≠{periods}) → 全量重同步")
+            else:
+                logger.info(f"📌 旧格式断点(无参数元数据) → 全量重同步")
         except Exception as e:
             logger.warning(f"⚠️ 断点文件读取失败({e})，重新全量同步")
+    elif force:
+        logger.info("📌 --force: 忽略断点，全量同步")
     pending = [c for c in codes if c not in done_codes]
     if not pending:
         logger.info("✅ 所有股票均已完成（断点），无需同步")
@@ -229,7 +254,8 @@ def sync_all_market(periods: list = None, days: int = None,
             if checkpoint_file:
                 done_codes.add(code)
                 if done % 50 == 0 or done == total:
-                    _save_checkpoint(checkpoint_file, done_codes)
+                    _save_checkpoint(checkpoint_file, done_codes,
+                                     days=days, periods=periods)
             if not progress_bar and (done % 200 == 0 or done == total):
                 logger.info(f"⏳ 进度: {done}/{total} "
                             f"(成功{progress['ok']} 失败{progress['fail']})")
@@ -264,6 +290,8 @@ if __name__ == '__main__':
                              'sync.checkpoint_file)')
     parser.add_argument('--no-progress', action='store_true',
                         help='关闭tqdm进度条')
+    parser.add_argument('--force', action='store_true',
+                        help='忽略断点强制全量同步（--days 变更时断点自动失效）')
     args = parser.parse_args()
 
     # 断点文件：参数 > config
@@ -282,6 +310,7 @@ if __name__ == '__main__':
         limit=args.limit,
         include_index=args.index,
         checkpoint_file=checkpoint,
+        force=args.force,
         progress_bar=not args.no_progress,
     )
     print(f"\n📊 同步结果: {result}")
