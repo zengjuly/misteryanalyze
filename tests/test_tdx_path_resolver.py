@@ -127,6 +127,40 @@ class TestPathResolver(unittest.TestCase):
         self.assertEqual(p2, os.path.join(self.tmp, 'sz', 'lday',
                                           'sz000001.day'))
 
+    def test_resolve_kline_dirs_home_first(self):
+        """目录优先级: [home/vipdoc, vipdoc_dir]（用户要求: 优先TDX_HOME）"""
+        from tdx_path_resolver import resolve_kline_dirs
+        os.environ['TDX_HOME'] = self.tmp
+        os.environ['TDX_VIPDOC_DIR'] = os.path.join(self.tmp, 'vip2')
+        os.makedirs(os.path.join(self.tmp, 'vipdoc', 'sh', 'lday'),
+                    exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, 'vip2', 'sh', 'lday'),
+                    exist_ok=True)
+        dirs = resolve_kline_dirs()
+        self.assertEqual(dirs[0], os.path.join(self.tmp, 'vipdoc'))
+        self.assertEqual(dirs[1], os.path.join(self.tmp, 'vip2'))
+
+    def test_tdx_local_multi_dir_fallback(self):
+        """TdxLocalClient: home 无该股 .day → 回退 vipdoc_dir 读取（用户要求）"""
+        from tdx_path_resolver import resolve_kline_dirs, day_file_path
+        os.environ['TDX_HOME'] = self.tmp
+        os.environ['TDX_VIPDOC_DIR'] = self.tmp
+        os.makedirs(os.path.join(self.tmp, 'vipdoc', 'sh', 'lday'),
+                    exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, 'sh', 'lday'), exist_ok=True)
+        # 股票 .day 只在 vipdoc_dir（tmp 根目录 sh/lday），home/vipdoc 没有
+        _make_day_file(os.path.join(self.tmp, 'sh', 'lday',
+                                    'sh600150.day'),
+                       int(datetime.now().strftime('%Y%m%d')))
+        import importlib
+        from tdx_local_client import TdxLocalClient
+        # config=None → 协议客户端禁用（不尝试连接行情服务器，测试快速失败）
+        tc = TdxLocalClient(vipdoc_dir=None, enable=True, config=None)
+        # home 优先目录无文件 → 回退到第二目录读取
+        df = tc.get_daily_data('sh600150', '2026-01-01', '2026-12-31')
+        self.assertFalse(df is None or df.empty)
+        self.assertGreater(len(df), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

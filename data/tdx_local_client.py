@@ -54,10 +54,14 @@ class TdxLocalClient:
         # 优先级: 环境变量TDX_VIPDOC_DIR > 配置 > 默认绝对路径（仓库外）
         # docs/tdx2.md: 日K用 resolve_vipdoc_for_kline（home/vipdoc > vipdoc_dir），
         # 财务用 resolve_vipdoc_for_fin（仅 VIPDOC，绝不读 TDX_HOME）
-        from tdx_path_resolver import (resolve_vipdoc_for_kline,
+        # 用户要求: tdxlocal 内部分优先级——优先 TDX_HOME，失败则 TDX_VIPDOC_DIR
+        from tdx_path_resolver import (resolve_kline_dirs,
                                        resolve_vipdoc_for_fin)
-        self.vipdoc_dir = resolve_vipdoc_for_kline() if vipdoc_dir is None \
-            else vipdoc_dir
+        if vipdoc_dir is None:
+            self.kline_dirs = resolve_kline_dirs()
+        else:
+            self.kline_dirs = [vipdoc_dir]
+        self.vipdoc_dir = self.kline_dirs[0]
         self.fin_dir = resolve_vipdoc_for_fin()
         self.enable = enable and MOOTDX_AVAILABLE
         self.reader = None
@@ -74,20 +78,27 @@ class TdxLocalClient:
         # 说明: mootdx Reader 期望 {tdxdir}/vipdoc/{market}/lday/ 结构（多一层vipdoc），
         # 与本项目 tdx_vipdoc/{market}/lday/ 不匹配导致 reader.daily 恒为空；
         # 因此实际 .day 读取统一走 TdxIncremental（兼容标准/扁平两种目录结构）。
-        from tdx_incremental import TdxIncremental
-        self.incremental_reader = TdxIncremental(vipdoc_dir=self.vipdoc_dir)
+        # 多目录（TDX_HOME 优先 → TDX_VIPDOC_DIR）各持一个 reader，惰性创建
+        self.incremental_readers = {}
         if self.enable:
             try:
                 # 目录不存在时自动创建（数据包下载脚本会写入）
                 os.makedirs(self.vipdoc_dir, exist_ok=True)
                 self.reader = Reader.factory(market='std', tdxdir=self.vipdoc_dir)
                 self.login_success = True
-                logger.info(f"📂 通达信本地数据源就绪: {self.vipdoc_dir}"
-                            + ("（协议补充·延迟初始化）"
+                logger.info(f"📂 通达信本地数据源就绪: {self.kline_dirs}"
+                            + (f"（协议补充·延迟初始化）"
                                if self._protocol_cfg is not None else ""))
             except Exception as e:
                 logger.warning(f"⚠️ 通达信本地数据源初始化失败({e})，"
                                f"将由备用源兜底")
+
+    def _reader_for(self, kdir: str):
+        """获取指定目录的 TdxIncremental 读取器（惰性创建）"""
+        if kdir not in self.incremental_readers:
+            from tdx_incremental import TdxIncremental
+            self.incremental_readers[kdir] = TdxIncremental(vipdoc_dir=kdir)
+        return self.incremental_readers[kdir]
 
     # ============ 兼容接口 ============
     def login(self) -> bool:
@@ -130,29 +141,33 @@ class TdxLocalClient:
 
         # docs/tdx2.md: 本地优先 + 过期回退（新鲜度判定）
         # 日K文件缺失或末根K线超期 → 协议补充 → 失败回退在线源(akshare/baostock)
+        # 用户要求: 目录优先级遍历——优先 TDX_HOME，失败则 TDX_VIPDOC_DIR
         from tdx_path_resolver import day_file_path, is_kline_fresh
-        day_file = day_file_path(code, self.vipdoc_dir)
-        # 指数代码（sh.000xxx / sz.399xxx）本地 .day 通常不存在，且协议服务器
-        # 不可达（TCP超时15s+）→ 快速返回空走在线源，避免每次分析卡 15-90s
         mkt = self._get_market(code)
         is_index = (mkt == 'sh' and code.startswith('000')) or \
                    (mkt == 'sz' and code.startswith('399'))
-        if is_index and not os.path.exists(day_file):
-            logger.info(f"[TDX本地-指数无本地数据→fallback] {code} 指数无 .day，"
-                        f"直接回退在线源")
-            return pd.DataFrame(columns=STANDARD_COLS)
-        if not is_kline_fresh(day_file):
-            logger.info(f"[TDX本地-过期→fallback] {code} 本地日K缺失或末根K线"
-                        f"超期({day_file})，尝试协议补充")
-            return self._fetch_protocol(stock_code, start_date, end_date)
-        logger.debug(f"[TDX本地-新鲜] {code} {day_file}")
-
-        # 本地读取（TdxIncremental 兼容标准/扁平目录结构）
-        df = self.incremental_reader._read_day_file_tail(code, None)
-
+        df = pd.DataFrame()
+        used_dir = None
+        for kdir in self.kline_dirs:
+            day_file = day_file_path(code, kdir)
+            if not os.path.exists(day_file):
+                continue
+            if not is_kline_fresh(day_file):
+                logger.info(f"[TDX本地-过期→fallback] {code} 本地日K超期"
+                            f"({day_file})，继续下一目录/协议补充")
+                continue
+            df = self._reader_for(kdir)._read_day_file_tail(code, None)
+            if df is not None and not df.empty:
+                used_dir = kdir
+                break
         if df is None or df.empty:
-            # 本地无数据 → 协议补充
+            # 本地无数据 → 指数快速失败（协议服务器不可达，避免卡 15s+）/ 协议补充
+            if is_index:
+                logger.info(f"[TDX本地-指数无本地数据→fallback] {code} "
+                            f"指数无 .day，直接回退在线源")
+                return pd.DataFrame(columns=STANDARD_COLS)
             return self._fetch_protocol(stock_code, start_date, end_date)
+        logger.debug(f"[TDX本地-新鲜] {code} {used_dir}")
 
         # 日期过滤 + 排序
         if '日期' in df.columns:

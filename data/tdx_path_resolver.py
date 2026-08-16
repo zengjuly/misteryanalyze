@@ -97,6 +97,32 @@ def day_file_path(code6: str, kline_dir: Optional[str] = None) -> str:
     return os.path.join(kline_dir, mkt, 'lday', f"{mkt}{code6}.day")
 
 
+def _has_lday_structure(d: str) -> bool:
+    """目录是否含 {sh,sz,bj}/lday 结构"""
+    return os.path.isdir(d) and any(
+        os.path.isdir(os.path.join(d, mkt, 'lday'))
+        for mkt in ('sh', 'sz', 'bj'))
+
+
+def resolve_kline_dirs() -> list:
+    """日K目录优先级列表（用户要求: 优先 TDX_HOME，失败则 TDX_VIPDOC_DIR）
+    :return: [home/vipdoc(若含lday), 显式vipdoc_dir(若含lday)] 去重；
+             均无 lday 结构时兜底返回 [显式vipdoc_dir]
+    """
+    dirs = []
+    home_vipdoc = os.path.join(resolve_home(), 'vipdoc')
+    if _has_lday_structure(home_vipdoc):
+        dirs.append(home_vipdoc)
+    # 显式 vipdoc_dir 用 resolve_vipdoc_for_fin（纯 TDX_VIPDOC_DIR，无 home 逻辑，
+    # 避免被 resolve_vipdoc_for_kline 的 home 优先抢占导致第二目录丢失）
+    explicit = resolve_vipdoc_for_fin()
+    if explicit not in dirs and _has_lday_structure(explicit):
+        dirs.append(explicit)
+    if not dirs:
+        dirs.append(explicit)
+    return dirs
+
+
 def _read_day_last_date(day_file: str) -> Optional[str]:
     """读取 .day 文件末根K线日期（定长32字节/条，读尾部解析）
     :return: 'YYYY-MM-DD' 或 None（文件损坏/过短）

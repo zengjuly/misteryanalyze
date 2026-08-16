@@ -1119,8 +1119,11 @@ data_source:
 
 **路径规则（tdx_path_resolver.py 新建）**：
 - `resolve_home()`：TDX_HOME env > config tdx.home_dir > 默认 /mnt/bigdata/tdx/files/new_tdx
-- `resolve_vipdoc_for_kline()`：**{home}/vipdoc（含lday）> 显式 vipdoc_dir（含lday）>
-  TDX_VIPDOC_DIR > 默认**——本机为 vipdoc/{sh,sz,bj}/lday 独立结构，走第二优先级
+- `resolve_kline_dirs()`：**日K目录优先级列表（用户要求: 优先 TDX_HOME 失败则
+  TDX_VIPDOC_DIR）**——[home/vipdoc(含lday), TDX_VIPDOC_DIR(含lday)] 去重；
+  TdxLocalClient.get_daily_data 逐目录遍历：home 无该股 .day/过期 → 下一目录 → 协议 → 在线源
+- `resolve_vipdoc_for_kline()`：{home}/vipdoc（含lday）> 显式 vipdoc_dir（含lday）>
+  TDX_VIPDOC_DIR > 默认——本机为 vipdoc/{sh,sz,bj}/lday 独立结构，走第二优先级
 - `resolve_vipdoc_for_fin()`：仅 TDX_VIPDOC_DIR（env > config > 默认）——**财务绝不读 TDX_HOME**
 - 优先级细节：**env 覆盖 config**（tdx2 验收用例）
 - 板块：仅 {home}/T0002/blocknew、hq_cache（本机无 TDX_HOME → 空，由 db 行业分类兜底）
