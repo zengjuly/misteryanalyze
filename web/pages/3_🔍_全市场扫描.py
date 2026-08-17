@@ -169,6 +169,19 @@ if 'scan_job_id' in st.session_state:
             df = ScanStore().results_df(job_id)
             if not df.empty:
                 st.dataframe(df, width="stretch")
+                # Excel 下载（多 sheet: 全部 / 信号 / 真三振）
+                sig_df = df[df['信号'].astype(str).str.strip() != '无'] \
+                    if '信号' in df.columns else df.iloc[0:0]
+                t3_df = df[df['真三振'] == True] \
+                    if '真三振' in df.columns else df.iloc[0:0]
+                from web.utils.download import excel_download_button
+                excel_download_button(
+                    df, f"scan_{job_id}_{date.today()}.xlsx",
+                    button_label="📥 下载结果明细 Excel",
+                    sheet_name='全部明细',
+                    sheets={'信号股票': sig_df, '真三振': t3_df},
+                    key=f"export_bg_{job_id}",
+                    help="多 sheet: 全部明细 / 信号股票 / 真三振")
                 st.download_button("⬇️ 下载明细 CSV", df.to_csv(
                     index=False).encode('utf-8-sig'),
                     file_name=f"scan_{job_id}.csv", mime="text/csv")
@@ -216,6 +229,12 @@ try:
                 '摘要': (j.get('message') or '')[:40],
             })
         st.dataframe(pd.DataFrame(job_rows), width="stretch")
+        # 任务列表 Excel 下载（历史任务一览）
+        from web.utils.download import excel_download_button
+        excel_download_button(
+            pd.DataFrame(job_rows), f"扫描任务历史_{date.today()}.xlsx",
+            button_label="📥 下载任务历史 Excel",
+            key="export_jobs_xlsx")
         # 选择历史任务查看结果
         sel_job = st.selectbox(
             "查看历史任务结果", [j['job_id'] for j in jobs],
@@ -231,6 +250,19 @@ try:
                 st.caption(f"📊 任务 {sel_job} 结果明细 "
                            f"（{len(hist_df)} 只）")
                 st.dataframe(hist_df, width="stretch")
+                # 结果明细 Excel（多 sheet: 全部 / 信号 / 真三振）
+                sig_df = hist_df[hist_df['信号'].astype(str).str.strip() != '无'] \
+                    if '信号' in hist_df.columns else hist_df.iloc[0:0]
+                t3_df = hist_df[hist_df['真三振'] == True] \
+                    if '真三振' in hist_df.columns else hist_df.iloc[0:0]
+                excel_download_button(
+                    hist_df,
+                    f"scan_{sel_job}_{date.today()}.xlsx",
+                    button_label="📥 下载结果明细 Excel",
+                    sheet_name='全部明细',
+                    sheets={'信号股票': sig_df, '真三振': t3_df},
+                    key=f"export_hist_{sel_job}",
+                    help="多 sheet: 全部明细 / 信号股票 / 真三振")
                 st.download_button("⬇️ 下载该任务明细 CSV", hist_df.to_csv(
                     index=False).encode('utf-8-sig'),
                     file_name=f"scan_{sel_job}.csv", mime="text/csv")

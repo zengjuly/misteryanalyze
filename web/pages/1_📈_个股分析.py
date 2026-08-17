@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), '..', 'data'))
 
 import streamlit as st
+from datetime import date
+
+import pandas as pd
 
 st.set_page_config(page_title="个股分析", page_icon="📈", layout="wide")
 
@@ -276,6 +279,33 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
             st.download_button("📥 导出CSV",
                                tail[show_cols].to_csv(index=False).encode('utf-8-sig'),
                                f"{code}_daily.csv", "text/csv")
+            # 分析结果 Excel（信号摘要 + 最近20日）
+            try:
+                from web.utils.download import excel_download_button
+                sig_row = {
+                    '股票代码': code, '股票名称': name,
+                    '综合评分': signal.get('综合评分', ''),
+                    '共振级别': signal.get('共振级别', ''),
+                    '真三振': signal.get('真三振', ''),
+                    '主升浪信号': signal.get('主升浪信号', ''),
+                    '资金活跃': signal.get('资金活跃', ''),
+                    '操作建议': signal.get('操作建议', ''),
+                    '筹码集中度': det.get('筹码集中度', ''),
+                    '平台范围': plat.get('平台范围', ''),
+                    '平台状态': plat.get('平台状态', ''),
+                    '主升浪满足': cl.get('满足数量', ''),
+                    '主升浪判断': cl.get('综合判断', ''),
+                }
+                excel_download_button(
+                    tail[show_cols].round(3),
+                    f"{code}_{name}_分析结果_{date.today()}.xlsx",
+                    button_label="📥 导出分析结果 Excel",
+                    sheet_name='最近20日',
+                    sheets={'信号摘要': pd.DataFrame([sig_row])},
+                    key=f"export_analysis_{code}",
+                    help="多 sheet: 最近20日K线 / 信号摘要")
+            except Exception as ex:
+                st.caption(f"Excel导出不可用: {ex}")
         except Exception as e:
             st.error(f"❌ 分析异常: {e}")
             import traceback

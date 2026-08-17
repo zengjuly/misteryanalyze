@@ -25,6 +25,14 @@ def render_stock_table(results: list, show_export: bool = True):
     )
     st.dataframe(styled, width="stretch", height=420)
     if show_export:
-        csv = show.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 导出 CSV", csv, "scan_results.csv",
-                           "text/csv", key="export_csv")
+        c1, c2 = st.columns(2)
+        with c1:
+            csv = show.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 导出 CSV", csv, "scan_results.csv",
+                               "text/csv", key="export_csv")
+        with c2:
+            from web.utils.download import excel_download_button
+            excel_download_button(
+                show, "scan_results.xlsx",
+                button_label="📥 导出 Excel",
+                key="export_xlsx")
