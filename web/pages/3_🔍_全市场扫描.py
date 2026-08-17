@@ -184,9 +184,15 @@ if 'scan_job_id' in st.session_state:
 
 # ===== 扫描任务历史 + 结果查看入口（独立库 scan_results.db） =====
 st.divider()
-st.subheader("📚 扫描任务历史")
-st.caption("全市场扫描结果独立存储于 scan_results.db；"
-           "行情（最新交易日）未更新时，同参数扫描直接命中缓存不重复执行")
+hcol1, hcol2 = st.columns([3, 1])
+with hcol1:
+    st.subheader("📚 扫描任务历史")
+    st.caption("全市场扫描结果独立存储于 scan_results.db；"
+               "行情（最新交易日）未更新时，同参数扫描直接命中缓存不重复执行")
+with hcol2:
+    st.button("🔄 刷新任务列表", key="refresh_scan_jobs",
+              width="stretch",
+              help="重新读取 scan_results.db 的任务状态与结果")
 try:
     from data.scan_store import ScanStore
     _store = ScanStore()
@@ -202,10 +208,10 @@ try:
                 '状态': {'finished': '✅ 完成', 'running': '⏳ 运行中',
                         'failed': '❌ 失败'}.get(j['status'], j['status']),
                 '交易日': j.get('trade_date', ''),
-                '扫描数': s.get('扫描数', j.get('result_count', 0)),
-                '含信号': s.get('含信号', ''),
-                '真三振': s.get('真三振数', ''),
-                '耗时(s)': s.get('耗时', ''),
+                '扫描数': s.get('扫描数', j.get('result_count')),
+                '含信号': s.get('含信号'),
+                '真三振': s.get('真三振数'),
+                '耗时(s)': s.get('耗时'),
                 '提交时间': (j.get('start_time') or '')[:19],
                 '摘要': (j.get('message') or '')[:40],
             })
