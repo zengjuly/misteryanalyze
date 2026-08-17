@@ -206,20 +206,27 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
         return {'股票代码': code, '综合评分': 0, '信号': '异常'}
 
 
+def _resolve_output_dir(output_dir: str = None) -> str:
+    """解析输出目录（None → config 中的 output_dir）"""
+    if output_dir:
+        return output_dir
+    from main import StockAnalysisSystem
+    sys_tmp = StockAnalysisSystem('config/config.yaml')
+    return sys_tmp.config.get('output_dir', 'output')
+
+
 def _write_scan_reports(results: list, output_dir: str,
                         summary: dict = None, tag: str = None) -> tuple:
-    """生成 文本汇总 + CSV 明细（独立库命中/正常扫描共用）
-    :return: (csv_path, txt_path)
+    """生成 文本汇总 + CSV 明细 + Excel 明细（独立库命中/正常扫描共用）
+    :return: (csv_path, txt_path, xlsx_path)
     """
     results_df = pd.DataFrame(results)
-    if output_dir is None:
-        from main import StockAnalysisSystem
-        sys_tmp = StockAnalysisSystem('config/config.yaml')
-        output_dir = sys_tmp.config.get('output_dir', 'output')
+    output_dir = _resolve_output_dir(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     signal_stocks = [r for r in results if r.get('信号') and r['信号'] != '无']
     breakout_stocks = [r for r in results if r.get('突破信号')]
+    true_three = [r for r in results if r.get('真三振')]
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     suffix = f'_{tag}' if tag else ''
@@ -242,7 +249,80 @@ def _write_scan_reports(results: list, output_dir: str,
     # CSV 明细
     csv_path = os.path.join(output_dir, f'市场扫描明细_{timestamp}{suffix}.csv')
     results_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-    return csv_path, txt_path
+
+    # Excel 明细（多 sheet: 汇总 / 全部明细 / 信号股票 / 真三振）
+    xlsx_path = os.path.join(output_dir, f'市场扫描明细_{timestamp}{suffix}.xlsx')
+    try:
+        with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
+            summary_df = pd.DataFrame([{
+                '扫描时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                '扫描股票数': len(results),
+                '含信号': len(signal_stocks),
+                'VAP-ATR突破': len(breakout_stocks),
+                '真三振': len(true_three),
+                '信号股票数': len(signal_stocks),
+            }])
+            summary_df.to_excel(writer, sheet_name='汇总', index=False)
+            results_df.to_excel(writer, sheet_name='全部明细', index=False)
+            if signal_stocks:
+                pd.DataFrame(signal_stocks).to_excel(
+                    writer, sheet_name='信号股票', index=False)
+            if true_three:
+                pd.DataFrame(true_three).to_excel(
+                    writer, sheet_name='真三振', index=False)
+        logger.info(f"📊 Excel明细已生成: {os.path.basename(xlsx_path)}")
+    except Exception as e:
+        logger.warning(f"⚠️ Excel生成失败（不影响CSV/TXT）: {e}")
+        xlsx_path = ''
+
+    return csv_path, txt_path, xlsx_path
+
+
+def _sync_scan_reports_to_git(output_dir: str, *report_paths) -> bool:
+    """将扫描报告同步到输出目录git仓库并推送远端（与 main.py 同步逻辑一致）"""
+    import subprocess as sp
+    output_dir = _resolve_output_dir(output_dir)
+    try:
+        check = sp.run(['git', '-C', output_dir, 'rev-parse',
+                        '--is-inside-work-tree'],
+                       capture_output=True, text=True, timeout=30)
+        if check.returncode != 0:
+            logger.warning(f"⚠️ {output_dir} 不是git仓库，跳过git同步")
+            return False
+        remote = sp.run(['git', '-C', output_dir, 'remote'],
+                        capture_output=True, text=True, timeout=30)
+        has_remote = bool(remote.stdout.strip())
+        paths = [os.path.basename(p) for p in report_paths if p]
+        if paths:
+            sp.run(['git', '-C', output_dir, 'add', '--'] + paths,
+                   capture_output=True, text=True, timeout=30)
+        else:
+            sp.run(['git', '-C', output_dir, 'add', '-A'],
+                   capture_output=True, text=True, timeout=30)
+        status = sp.run(['git', '-C', output_dir, 'status', '--porcelain'],
+                        capture_output=True, text=True, timeout=30)
+        if not status.stdout.strip():
+            logger.info("📦 输出目录无新变更，跳过提交")
+            return True
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        commit_msg = f"📊 全市场扫描报告更新 {timestamp}"
+        commit = sp.run(['git', '-C', output_dir, 'commit', '-m', commit_msg],
+                        capture_output=True, text=True, timeout=60)
+        if commit.returncode != 0:
+            logger.error(f"❌ git提交失败: {commit.stderr.strip()}")
+            return False
+        logger.info(f"✅ git提交成功: {commit_msg}")
+        if has_remote:
+            push = sp.run(['git', '-C', output_dir, 'push'],
+                          capture_output=True, text=True, timeout=120)
+            if push.returncode == 0:
+                logger.info("🚀 git推送远端成功")
+            else:
+                logger.warning(f"⚠️ git推送远端失败: {push.stderr.strip()[:200]}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ git同步异常: {e}")
+        return False
 
 
 def run_market_scan(limit: int = None, period: str = 'daily',
@@ -284,8 +364,8 @@ def run_market_scan(limit: int = None, period: str = 'daily',
             results = cached['results']
             logger.info(f"⚡ 缓存命中（交易日 {trade_date} 未更新，"
                         f"任务 {cached['job_id']} 复用）: {len(results)} 只")
-            # 重新生成 CSV/报告（结果仍落在 output 目录，保持既有习惯）
-            csv_path, txt_path = _write_scan_reports(
+            # 重新生成 CSV/Excel/报告（结果仍落在 output 目录，保持既有习惯）
+            csv_path, txt_path, xlsx_path = _write_scan_reports(
                 results, output_dir, cached['summary'], cached['job_id'])
             if job_id:
                 store.finish_job(
@@ -294,6 +374,9 @@ def run_market_scan(limit: int = None, period: str = 'daily',
                              '源任务': cached['job_id']},
                     message=f"⚡ 缓存命中（行情未更新），复用任务 "
                             f"{cached['job_id']} 的 {len(results)} 只结果")
+            # 同步到 output git 仓库（Excel/CSV/TXT 一并推送远端）
+            _sync_scan_reports_to_git(
+                output_dir, xlsx_path, csv_path, txt_path)
             return {
                 '扫描数': len(results),
                 '含信号': len([r for r in results if r.get('信号')
@@ -303,6 +386,7 @@ def run_market_scan(limit: int = None, period: str = 'daily',
                 '真三振数': len([r for r in results if r.get('真三振')]),
                 '报告': txt_path,
                 '明细': csv_path,
+                'Excel': xlsx_path,
                 '耗时': 0.0,
                 '缓存命中': True,
                 'job_id': cached['job_id'],
@@ -405,7 +489,7 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         )
     results.sort(key=sort_key, reverse=True)
 
-    csv_path, txt_path = _write_scan_reports(
+    csv_path, txt_path, xlsx_path = _write_scan_reports(
         results, output_dir, tag=job_id)
 
     elapsed = time.time() - start_time
@@ -424,6 +508,9 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         message=f"完成: 扫描{len(results)}只, 信号{len(signal_stocks)}, "
                 f"真三振{summary['真三振数']}, 耗时{elapsed:.0f}s")
 
+    # 同步到 output git 仓库（Excel/CSV/TXT 一并推送远端）
+    _sync_scan_reports_to_git(output_dir, xlsx_path, csv_path, txt_path)
+
     logger.info(f"✅ 扫描完成! 耗时{elapsed:.1f}秒")
     logger.info(f"📦 数据库: {stats}")
     return {
@@ -433,6 +520,7 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         '真三振数': summary['真三振数'],
         '报告': txt_path,
         '明细': csv_path,
+        'Excel': xlsx_path,
         '耗时': round(elapsed, 1),
         '缓存命中': False,
         'job_id': job_id,

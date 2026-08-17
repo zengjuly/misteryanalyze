@@ -239,8 +239,10 @@ python3 run_analysis.py --test
 扫描输出（output 目录 + 独立库 scan_results.db）：
 - `市场扫描报告_时间戳.txt`：信号股票 Top（VAP-ATR 突破 / 筹码低位共振）+ 主升浪满足数
 - `市场扫描明细_时间戳.csv`：全量明细（自适应N / POC / 自适应上下轨 / 信号等）
+- `市场扫描明细_时间戳.xlsx`：Excel 多 sheet（汇总 / 全部明细 / 信号股票 / 真三振）
 - `scan_results.db`：任务状态（scan_jobs 表）+ 每只股票结果明细（scan_results 表），
   独立于行情库；页3 扫描任务历史 / 页5 系统状态可查看
+- 每次扫描完成后 Excel/CSV/TXT 自动 git 提交推送至 output 远端仓库
 
 #### 3. 核心信号
 

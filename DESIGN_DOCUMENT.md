@@ -1263,13 +1263,26 @@ tdx_block 降级/后台任务）、页面渲染 7/7（含新页面6）
 **③ 状态/结果查看入口**：
 - **页3 全市场扫描**：后台任务轮询改读 ScanStore（独立库，不再直接 sqlite3
   主库）；新增"📚 扫描任务历史"区块——任务列表（状态/交易日/扫描数/信号/
-  真三振/耗时/摘要）+ selectbox 选历史任务 → 结果明细表 + CSV 下载；
-  命中缓存时显示"⚡ 复用源任务 xx 的结果"
+  真三振/耗时/摘要）+ 🔄 刷新任务列表按钮 + selectbox 选历史任务 → 结果
+  明细表 + CSV 下载；命中缓存时显示"⚡ 复用源任务 xx 的结果"
 - **页5 系统状态**：新增"🔍 扫描结果独立库"概览（任务数/已完成/明细行数/
   库大小/最新交易日缓存键）
 
+**④ Excel 结果 + git 同步（用户反馈"分析结果没有同步保存excel结果"）**：
+- `_write_scan_reports` 新增 Excel 生成：`市场扫描明细_{时间戳}_{job}.xlsx`
+  多 sheet（汇总 / 全部明细 / 信号股票 / 真三振），openpyxl 引擎
+- 新增 `_sync_scan_reports_to_git`：扫描完成后把 Excel/CSV/TXT 一并
+  git add/commit/push 到 output 仓库（与 main.py 单股/每日报告同步一致，
+  提交信息"📊 全市场扫描报告更新"）；缓存命中分支同样同步
+- `_resolve_output_dir`：output_dir 为 None 时统一解析 config 路径
+  （修复 git 同步 NoneType 崩溃）
+- 实测：5211 只全市场扫描结果（旧代码产物）用 results_cn 从独立库读回
+  补生成 Excel（汇总 1 行 + 全部明细 5211 行 + 信号股票 2542 行）并推送
+  远端；缓存命中二次生成 Excel 0s
+
 **验证**：scan_store 自检（建表/写读/缓存命中/参数不同不命中）、
-真实扫描 3 只 → 二次缓存命中 0s、页3/页5 AppTest 渲染、py_compile 全绿
+真实扫描 3 只 → 二次缓存命中 0s、Excel 内容真实（股票名称/POC/筹码值）、
+output git 远端推送成功（7bfd57f）、页3/页5 AppTest 渲染、py_compile 全绿
 
 ## 5. 接口设计
 
