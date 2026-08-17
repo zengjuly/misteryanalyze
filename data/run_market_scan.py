@@ -206,11 +206,53 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
         return {'股票代码': code, '综合评分': 0, '信号': '异常'}
 
 
+def _write_scan_reports(results: list, output_dir: str,
+                        summary: dict = None, tag: str = None) -> tuple:
+    """生成 文本汇总 + CSV 明细（独立库命中/正常扫描共用）
+    :return: (csv_path, txt_path)
+    """
+    results_df = pd.DataFrame(results)
+    if output_dir is None:
+        from main import StockAnalysisSystem
+        sys_tmp = StockAnalysisSystem('config/config.yaml')
+        output_dir = sys_tmp.config.get('output_dir', 'output')
+    os.makedirs(output_dir, exist_ok=True)
+
+    signal_stocks = [r for r in results if r.get('信号') and r['信号'] != '无']
+    breakout_stocks = [r for r in results if r.get('突破信号')]
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    suffix = f'_{tag}' if tag else ''
+    # 文本汇总
+    txt_path = os.path.join(output_dir, f'市场扫描报告_{timestamp}{suffix}.txt')
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write(f"=== 全市场扫描报告 {datetime.now()} ===\n")
+        f.write(f"扫描股票数: {len(results)} | 含信号: {len(signal_stocks)} "
+                f"| VAP-ATR突破: {len(breakout_stocks)}\n\n")
+        f.write("【信号股票 Top】\n")
+        for r in signal_stocks[:20]:
+            f.write(f"  {r.get('股票名称', '')} ({r.get('股票代码')}): "
+                    f"{r.get('信号')} | POC={r.get('POC')} | "
+                    f"满足{r.get('主升浪满足')}/8 | {r.get('主升浪综合判断')}\n")
+        f.write("\n【VAP-ATR突破股票】\n")
+        for r in breakout_stocks[:20]:
+            f.write(f"  {r.get('股票名称', '')} ({r.get('股票代码')}): "
+                    f"POC={r.get('POC')} 上轨={r.get('自适应上轨')}\n")
+
+    # CSV 明细
+    csv_path = os.path.join(output_dir, f'市场扫描明细_{timestamp}{suffix}.csv')
+    results_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+    return csv_path, txt_path
+
+
 def run_market_scan(limit: int = None, period: str = 'daily',
                     sync_first: bool = False, top_n: int = 20,
                     output_dir: str = None,
                     enable_three_strike: bool = True,
-                    enable_main_wave: bool = True) -> dict:
+                    enable_main_wave: bool = True,
+                    use_cache: bool = True,
+                    job_id: str = None,
+                    progress_cb=None) -> dict:
     """
     全量扫描分析主函数
     :param limit: 扫描股票数量限制
@@ -220,9 +262,60 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     :param output_dir: 输出目录（默认config中的output_dir）
     :param enable_three_strike: 使能三振共振分析（docs/081601.md 用户要求）
     :param enable_main_wave: 使能主升浪8项分析
+    :param use_cache: 缓存复用（同参数+同最新交易日 → 直接返回上次结果，
+        行情不更新不需要重复执行）
+    :param job_id: 后台任务ID（run_market_scan_background 传入；前台自动创建）
+    :param progress_cb: 进度回调 fn(progress: float, message: str)
     """
+    from data.scan_store import ScanStore
+    store = ScanStore()
+    params = {
+        'period': period, 'limit': limit, 'sync_first': sync_first,
+        'top_n': top_n, 'enable_three_strike': enable_three_strike,
+        'enable_main_wave': enable_main_wave,
+    }
+    trade_date = store.get_market_trade_date()
+
+    # ===== 缓存命中：行情未更新 → 直接复用上次扫描结果 =====
+    if use_cache:
+        cached = store.find_cache(params, trade_date)
+        if cached:
+            elapsed = 0.0
+            results = cached['results']
+            logger.info(f"⚡ 缓存命中（交易日 {trade_date} 未更新，"
+                        f"任务 {cached['job_id']} 复用）: {len(results)} 只")
+            # 重新生成 CSV/报告（结果仍落在 output 目录，保持既有习惯）
+            csv_path, txt_path = _write_scan_reports(
+                results, output_dir, cached['summary'], cached['job_id'])
+            if job_id:
+                store.finish_job(
+                    job_id, 'finished',
+                    summary={**cached['summary'], '缓存命中': True,
+                             '源任务': cached['job_id']},
+                    message=f"⚡ 缓存命中（行情未更新），复用任务 "
+                            f"{cached['job_id']} 的 {len(results)} 只结果")
+            return {
+                '扫描数': len(results),
+                '含信号': len([r for r in results if r.get('信号')
+                               and r['信号'] != '无']),
+                'VAP-ATR突破': len([r for r in results
+                                    if r.get('突破信号')]),
+                '真三振数': len([r for r in results if r.get('真三振')]),
+                '报告': txt_path,
+                '明细': csv_path,
+                '耗时': 0.0,
+                '缓存命中': True,
+                'job_id': cached['job_id'],
+                'results': results,
+                'stats': store.stats(),
+            }
+
     start_time = time.time()
     engine = MysteryDataEngine()
+
+    # 创建任务记录（后台任务已建，前台自动建）
+    if job_id is None:
+        job_id = store.create_job(params, trade_date)
 
     # 1. 加载缓存股票列表
     codes = load_local_cached_tickers(engine, period, limit=limit,
@@ -254,6 +347,7 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     # 2. 逐只扫描（单线程，避免baostock并发问题；轻量指标每只 <1s）
     logger.info(f"🔍 开始全量扫描 {len(codes)} 只股票...")
     results = []
+    total = len(codes)
     for i, code in enumerate(codes, 1):
         r = scan_single_stock(engine, code, period,
                               enable_three_strike=enable_three_strike,
@@ -262,8 +356,15 @@ def run_market_scan(limit: int = None, period: str = 'daily',
                               sector_map=sector_map,
                               ind_map=ind_map)
         results.append(r)
-        if i % 100 == 0 or i == len(codes):
-            logger.info(f"⏳ 扫描进度: {i}/{len(codes)}")
+        if i % 100 == 0 or i == total:
+            logger.info(f"⏳ 扫描进度: {i}/{total}")
+        # 进度上报（后台任务/Web 轮询用）
+        if i % 200 == 0 or i == total:
+            store.update_job(job_id, progress=round(i / total, 3),
+                             message=f"扫描 {i}/{total}")
+            store.save_results(job_id, results)
+            if progress_cb:
+                progress_cb(round(i / total, 3), f"扫描 {i}/{total}")
 
     # 3. 补充股票名称（从缓存证券信息表）
     info_df = engine.db.get_stock_info(stock_only=True)
@@ -272,17 +373,26 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         if '股票代码' in r:
             r['股票名称'] = name_map.get(r['股票代码'], r['股票代码'])
 
+    # 3.5 写独立库（结果存储 + 缓存源）
+    try:
+        store.save_results(job_id, results, trade_date)
+        logger.info(f"🗄️ 扫描结果已写入独立库 {store.db_path} "
+                    f"（{len(results)} 只）")
+    except Exception as e:
+        logger.warning(f"⚠️ 扫描结果写库失败: {e}")
+
     # 4. 信号统计
     signal_stocks = [r for r in results if r.get('信号') and r['信号'] != '无']
     breakout_stocks = [r for r in results if r.get('突破信号')]
     logger.info(f"🎯 信号统计: 总扫描{len(results)}, "
                 f"含信号{len(signal_stocks)}, VAP-ATR突破{len(breakout_stocks)}")
 
-    # 5. 生成报告（Top N）
-    from utils import build_report_filename
+    # 5. 生成报告（文本汇总 + CSV 明细）
     results_df = pd.DataFrame(results)
     if results_df.empty:
         logger.warning("⚠️ 无扫描结果")
+        store.finish_job(job_id, 'failed', summary={'扫描数': 0},
+                         message='无扫描结果')
         engine.close()
         return {'扫描数': 0}
 
@@ -294,39 +404,25 @@ def run_market_scan(limit: int = None, period: str = 'daily',
             r.get('主升浪满足', 0),
         )
     results.sort(key=sort_key, reverse=True)
-    top_df = results_df.head(top_n)
 
-    # 输出到 output 目录
-    if output_dir is None:
-        from main import StockAnalysisSystem
-        sys_tmp = StockAnalysisSystem('config/config.yaml')
-        output_dir = sys_tmp.config.get('output_dir', 'output')
-    os.makedirs(output_dir, exist_ok=True)
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # 文本汇总
-    txt_path = os.path.join(output_dir, f'市场扫描报告_{timestamp}.txt')
-    with open(txt_path, 'w', encoding='utf-8') as f:
-        f.write(f"=== 全市场扫描报告 {datetime.now()} ===\n")
-        f.write(f"扫描股票数: {len(results)} | 含信号: {len(signal_stocks)} "
-                f"| VAP-ATR突破: {len(breakout_stocks)}\n\n")
-        f.write("【信号股票 Top】\n")
-        for r in signal_stocks[:top_n]:
-            f.write(f"  {r.get('股票名称', '')} ({r.get('股票代码')}): "
-                    f"{r.get('信号')} | POC={r.get('POC')} | "
-                    f"满足{r.get('主升浪满足')}/8 | {r.get('主升浪综合判断')}\n")
-        f.write("\n【VAP-ATR突破股票】\n")
-        for r in breakout_stocks[:top_n]:
-            f.write(f"  {r.get('股票名称', '')} ({r.get('股票代码')}): "
-                    f"POC={r.get('POC')} 上轨={r.get('自适应上轨')}\n")
-
-    # CSV 明细
-    csv_path = os.path.join(output_dir, f'市场扫描明细_{timestamp}.csv')
-    results_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+    csv_path, txt_path = _write_scan_reports(
+        results, output_dir, tag=job_id)
 
     elapsed = time.time() - start_time
     stats = engine.stats()
     engine.close()
+
+    summary = {
+        '扫描数': len(results),
+        '含信号': len(signal_stocks),
+        'VAP-ATR突破': len(breakout_stocks),
+        '真三振数': len([r for r in results if r.get('真三振')]),
+        '耗时': round(elapsed, 1),
+    }
+    store.finish_job(
+        job_id, 'finished', summary=summary,
+        message=f"完成: 扫描{len(results)}只, 信号{len(signal_stocks)}, "
+                f"真三振{summary['真三振数']}, 耗时{elapsed:.0f}s")
 
     logger.info(f"✅ 扫描完成! 耗时{elapsed:.1f}秒")
     logger.info(f"📦 数据库: {stats}")
@@ -334,10 +430,13 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         '扫描数': len(results),
         '含信号': len(signal_stocks),
         'VAP-ATR突破': len(breakout_stocks),
-        '真三振数': len([r for r in results if r.get('真三振')]),
+        '真三振数': summary['真三振数'],
         '报告': txt_path,
         '明细': csv_path,
         '耗时': round(elapsed, 1),
+        '缓存命中': False,
+        'job_id': job_id,
+        'results': results,
         'stats': stats,
     }
 
@@ -347,33 +446,19 @@ def run_market_scan_background(limit: int = None, period: str = 'daily',
                                output_dir: str = None,
                                enable_three_strike: bool = True,
                                enable_main_wave: bool = True) -> str:
-    """后台运行全市场扫描（docs/081601.md §四: 线程 + scan_jobs 状态表）
+    """后台运行全市场扫描（独立库 scan_results.db + daemon 线程）
     :return: job_id（供 Web 页轮询）
     """
-    import sqlite3
     import threading
-    import uuid
-    from data.db_manager import DEFAULT_DB_PATH
+    from data.scan_store import ScanStore
 
-    job_id = str(uuid.uuid4())[:8]
-    with sqlite3.connect(DEFAULT_DB_PATH) as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS scan_jobs (
-                job_id TEXT PRIMARY KEY,
-                status TEXT,
-                progress REAL,
-                result_path TEXT,
-                start_time TEXT,
-                end_time TEXT,
-                message TEXT
-            )
-        ''')
-        conn.execute(
-            'INSERT INTO scan_jobs (job_id, status, progress, start_time, message) '
-            'VALUES (?, ?, ?, ?, ?)',
-            (job_id, 'running', 0.0, datetime.now().isoformat(),
-             f"扫描 {period} 周期" + ("（三振）" if enable_three_strike else "")))
-        conn.commit()
+    store = ScanStore()
+    params = {
+        'period': period, 'limit': limit, 'sync_first': sync_first,
+        'top_n': top_n, 'enable_three_strike': enable_three_strike,
+        'enable_main_wave': enable_main_wave,
+    }
+    job_id = store.create_job(params)
 
     def _worker():
         try:
@@ -381,24 +466,10 @@ def run_market_scan_background(limit: int = None, period: str = 'daily',
                 limit=limit, period=period, sync_first=sync_first,
                 top_n=top_n, output_dir=output_dir,
                 enable_three_strike=enable_three_strike,
-                enable_main_wave=enable_main_wave)
-            with sqlite3.connect(DEFAULT_DB_PATH) as conn:
-                conn.execute(
-                    'UPDATE scan_jobs SET status=?, progress=?, result_path=?, '
-                    'end_time=?, message=? WHERE job_id=?',
-                    ('finished', 1.0, result.get('明细', ''),
-                     datetime.now().isoformat(),
-                     f"完成: 扫描{result.get('扫描数', 0)}只, "
-                     f"信号{result.get('含信号', 0)}, "
-                     f"真三振{result.get('真三振数', 0)}, "
-                     f"耗时{result.get('耗时', 0)}s", job_id))
-                conn.commit()
+                enable_main_wave=enable_main_wave,
+                use_cache=True, job_id=job_id)
         except Exception as e:
-            with sqlite3.connect(DEFAULT_DB_PATH) as conn:
-                conn.execute(
-                    'UPDATE scan_jobs SET status=?, message=? WHERE job_id=?',
-                    ('failed', str(e)[:200], job_id))
-                conn.commit()
+            store.finish_job(job_id, 'failed', message=str(e)[:200])
             logger.error(f"❌ 后台扫描失败 {job_id}: {e}")
 
     t = threading.Thread(target=_worker, daemon=True, name=f'scan-{job_id}')
@@ -414,8 +485,11 @@ if __name__ == '__main__':
                         default='daily', help='K线周期')
     parser.add_argument('--sync', action='store_true', help='先同步数据再扫描')
     parser.add_argument('--top', type=int, default=20, help='报告Top N')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='忽略扫描结果缓存（行情未更新时默认复用上次结果）')
     args = parser.parse_args()
 
     result = run_market_scan(limit=args.limit, period=args.period,
-                             sync_first=args.sync, top_n=args.top)
+                             sync_first=args.sync, top_n=args.top,
+                             use_cache=not args.no_cache)
     print(f"\n📊 扫描结果: {result}")

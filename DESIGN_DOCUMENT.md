@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.15.0
+- **版本**: 1.16.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-16
+- **更新日期**: 2026-08-17
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -21,7 +21,7 @@
 - 具备良好的扩展性和维护性
 
 ### 1.3 核心特性
-- **数据获取**: 基于 baostock 的股票数据获取（日线/周线/月线/指数/行业/财务/分红）
+- **数据获取**: 基于 tdx_local(安装目录优先)优先，akshare、baostock兜底 的股票数据获取（日线/周线/月线/指数/行业/财务/分红）
 - **技术指标**: 均线、趋势、动能指标计算（MA/MACD/RSI/量比/OBV 等）
 - **Mystery理论**: 三振共振（个股+行业+大盘）、主升浪识别、形态识别
 - **自适应平台**: VAP-ATR 平台中枢（POC 筹码控制点 + 波动率自适应通道，A股涨跌停修正）
@@ -1227,6 +1227,49 @@ home优先/lday结构/财务隔离/财务新鲜/路径结构）——套件 56/5
 
 **验证**：单测 58/58、081601 功能 17/17（MA377/610/EMA20/max_bars/watchlist CRUD/
 tdx_block 降级/后台任务）、页面渲染 7/7（含新页面6）
+
+### 4.13 扫描结果独立库 + 行情缓存（v1.16.0）— ★★
+
+**需求**：全市场扫描的结果单独存储一个数据库；具备缓存功能（行情不更新
+不需要重复执行）；后台扫描状态和结果有查看入口。
+
+**① 独立扫描结果库（data/scan_store.py 新建）**：
+- 独立 SQLite 库 `scan_results.db`（env `SCAN_RESULTS_DB_PATH` 可覆盖；默认
+  与主行情库同目录——生产环境 MYSTERY_DB_PATH 指向
+  /home/ai/ai_runner/stock/data/db/ 时自动落在同目录），不与行情缓存混库
+- 表：`scan_jobs`（job_id PK / status / progress / params JSON / trade_date
+  缓存键 / result_count / start/end_time / message / summary JSON）+
+  `scan_results`（job_id+code 复合主键，每只股票明细：三振评分/真三振/级别/
+  主升浪满足/信号/POC/上下轨/平台/筹码/自适应N/最新价）
+- `ScanStore` API：create_job / update_job / finish_job / get_job /
+  list_jobs / save_results（executemany 批量，兼容 scan_single_stock 中文
+  字典）/ get_results / results_df（中文列名 DataFrame，页3 展示用）/
+  results_cn（中文列名字典列表，缓存命中复用/报告生成）/ stats
+- **字段映射陷阱**：scan_results 表存英文列名，读回必须经 results_cn 转
+  中文结构再喂报告生成——直接拿英文 dict 会判"含信号 0"（r.get('信号') 取不到）
+
+**② 行情缓存（行情不更新不重复执行）**：
+- 缓存键 = (period, enable_three_strike, enable_main_wave, limit) +
+  trade_date（`ScanStore.get_market_trade_date()` = 主库 stock_kline_data
+  日线 MAX(date)，全市场同一交易日不变）
+- `run_market_scan(use_cache=True)`（默认）：先 `find_cache(params, trade_date)`
+  查同参数+同交易日的 finished 任务 → 命中直接复用其结果（results_cn 中文
+  结构），仅重新生成 CSV/报告（tag=源 job_id），耗时 0；未命中才真正扫描
+- 扫描中每 200 只 update_job 进度 + save_results 增量落库；完成后 finish_job
+  写 summary（扫描数/含信号/真三振数/耗时）
+- 页3 前端同步扫描缓存键同步改为最新交易日（原 date.today() 周末会失效）
+- 实测：3 只首扫 32.3s → 二次同交易日命中缓存 0.0s
+
+**③ 状态/结果查看入口**：
+- **页3 全市场扫描**：后台任务轮询改读 ScanStore（独立库，不再直接 sqlite3
+  主库）；新增"📚 扫描任务历史"区块——任务列表（状态/交易日/扫描数/信号/
+  真三振/耗时/摘要）+ selectbox 选历史任务 → 结果明细表 + CSV 下载；
+  命中缓存时显示"⚡ 复用源任务 xx 的结果"
+- **页5 系统状态**：新增"🔍 扫描结果独立库"概览（任务数/已完成/明细行数/
+  库大小/最新交易日缓存键）
+
+**验证**：scan_store 自检（建表/写读/缓存命中/参数不同不命中）、
+真实扫描 3 只 → 二次缓存命中 0s、页3/页5 AppTest 渲染、py_compile 全绿
 
 ## 5. 接口设计
 

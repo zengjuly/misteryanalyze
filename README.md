@@ -220,6 +220,9 @@ python3 run_analysis.py --test
 # 快速测试：仅扫描前100只
 /home/ai/ai_runner/venv/bin/python data/run_market_scan.py --limit 100
 
+# 忽略缓存强制重扫（同交易日行情未更新时默认直接复用上次结果）
+/home/ai/ai_runner/venv/bin/python data/run_market_scan.py --limit 100 --no-cache
+
 # 周线周期扫描 + 报告Top 50
 /home/ai/ai_runner/venv/bin/python data/run_market_scan.py --period weekly --top 50
 ```
@@ -231,10 +234,13 @@ python3 run_analysis.py --test
 | `--period` | K线周期：daily/weekly/monthly | daily |
 | `--sync` | 先同步数据再扫描 | 否 |
 | `--top` | 报告Top N | 20 |
+| `--no-cache` | 忽略扫描结果缓存（行情未更新时默认复用上次结果） | 否 |
 
-扫描输出（output 目录）：
+扫描输出（output 目录 + 独立库 scan_results.db）：
 - `市场扫描报告_时间戳.txt`：信号股票 Top（VAP-ATR 突破 / 筹码低位共振）+ 主升浪满足数
 - `市场扫描明细_时间戳.csv`：全量明细（自适应N / POC / 自适应上下轨 / 信号等）
+- `scan_results.db`：任务状态（scan_jobs 表）+ 每只股票结果明细（scan_results 表），
+  独立于行情库；页3 扫描任务历史 / 页5 系统状态可查看
 
 #### 3. 核心信号
 
@@ -539,13 +545,18 @@ streamlit run web/app.py --server.port 1888 --server.headless true
 
 分析结果缓存（mystery_analysis_cache 表）：个股以 (代码, 最新K线日期) 为键、扫描以当日为键，行情未更新不重复分析。
 
+全市场扫描结果独立存储（scan_results.db，与主行情库同目录）：任务状态 + 每只股票
+明细入库；以最新交易日为缓存键，行情未更新时同参数扫描直接命中缓存不重复执行
+（实测二次扫描耗时 0s）。后台扫描状态/历史任务/结果明细可在 Web 页3「全市场扫描」
+与页5「系统状态」查看。
+
 生产部署：`sudo cp scripts/mystery-web.service /etc/systemd/system/ && sudo systemctl enable --now mystery-web`（防火墙开放 1888 端口）。
 
 ## 版本信息
 
-- **版本**: 1.15.0
+- **版本**: 1.16.0
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-16
+- **更新时间**: 2026-08-17
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 首次部署 Checklist

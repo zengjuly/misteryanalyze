@@ -11,8 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), '..', 'data'))
 
 import streamlit as st
+from datetime import date
 
 st.set_page_config(page_title="全市场扫描", page_icon="🔍", layout="wide")
+
+import pandas as pd
 
 from web.utils.session import get_feeder, get_logic, get_config, \
     save_scan_results
@@ -141,44 +144,92 @@ with st.sidebar:
         st.success(f"🚀 后台任务已提交: {job_id}（可在下方查看进度，"
                    f"或到 ⚙️ 系统状态页查看）")
 
-# ===== 后台任务状态轮询（docs/081601.md §四） =====
+# ===== 后台任务状态轮询（docs/081601.md §四 + 独立库 scan_results.db） =====
 if 'scan_job_id' in st.session_state:
     st.divider()
     st.subheader("🖥️ 后台扫描任务")
-    import sqlite3
-    from data.db_manager import DEFAULT_DB_PATH
+    from data.scan_store import ScanStore
     job_id = st.session_state['scan_job_id']
     try:
-        with sqlite3.connect(DEFAULT_DB_PATH) as conn:
-            row = conn.execute(
-                'SELECT status, progress, message, result_path, start_time '
-                'FROM scan_jobs WHERE job_id=?', (job_id,)).fetchone()
+        job = ScanStore().get_job(job_id)
     except Exception:
-        row = None
-    if row:
-        status, progress, message, result_path, start_time = row
-        st.progress(progress or 0, text=f"状态: {status} | {message}")
-        st.caption(f"任务ID: {job_id} | 提交时间: {start_time}")
+        job = None
+    if job:
+        status = job['status']
+        st.progress(job['progress'] or 0,
+                    text=f"状态: {status} | {job.get('message', '')}")
+        st.caption(f"任务ID: {job_id} | 提交时间: {job['start_time']} "
+                   f"| 交易日: {job.get('trade_date', '')}")
         if status == 'finished':
             st.success("✅ 扫描完成")
-            # 读 CSV 展示（run_market_scan 输出）
-            try:
-                import pandas as pd
-                df = pd.read_csv(result_path)
+            if job.get('summary', {}).get('缓存命中'):
+                st.info(f"⚡ 本次命中缓存：行情交易日 "
+                        f"{job.get('trade_date')} 未更新，复用源任务 "
+                        f"{job['summary'].get('源任务')} 的结果，未重新扫描")
+            df = ScanStore().results_df(job_id)
+            if not df.empty:
                 st.dataframe(df, width="stretch")
                 st.download_button("⬇️ 下载明细 CSV", df.to_csv(
                     index=False).encode('utf-8-sig'),
                     file_name=f"scan_{job_id}.csv", mime="text/csv")
-            except Exception as e:
-                st.info(f"明细读取失败: {e}")
+            else:
+                st.info("该任务无结果明细")
             st.session_state.pop('scan_job_id', None)
         elif status == 'failed':
-            st.error(f"❌ 任务失败: {message}")
+            st.error(f"❌ 任务失败: {job.get('message', '')}")
             st.session_state.pop('scan_job_id', None)
         else:
             st.info("⏳ 后台扫描运行中... 点击任意位置自动刷新，"
                     "或等待完成后展示结果")
-            # 自动刷新（streamlit 交互触发 rerun）
+
+# ===== 扫描任务历史 + 结果查看入口（独立库 scan_results.db） =====
+st.divider()
+st.subheader("📚 扫描任务历史")
+st.caption("全市场扫描结果独立存储于 scan_results.db；"
+           "行情（最新交易日）未更新时，同参数扫描直接命中缓存不重复执行")
+try:
+    from data.scan_store import ScanStore
+    _store = ScanStore()
+    jobs = _store.list_jobs(20)
+    if not jobs:
+        st.info("暂无扫描任务记录（提交后台扫描或运行 run_market_scan.py 后出现）")
+    else:
+        job_rows = []
+        for j in jobs:
+            s = j.get('summary', {})
+            job_rows.append({
+                '任务ID': j['job_id'],
+                '状态': {'finished': '✅ 完成', 'running': '⏳ 运行中',
+                        'failed': '❌ 失败'}.get(j['status'], j['status']),
+                '交易日': j.get('trade_date', ''),
+                '扫描数': s.get('扫描数', j.get('result_count', 0)),
+                '含信号': s.get('含信号', ''),
+                '真三振': s.get('真三振数', ''),
+                '耗时(s)': s.get('耗时', ''),
+                '提交时间': (j.get('start_time') or '')[:19],
+                '摘要': (j.get('message') or '')[:40],
+            })
+        st.dataframe(pd.DataFrame(job_rows), width="stretch")
+        # 选择历史任务查看结果
+        sel_job = st.selectbox(
+            "查看历史任务结果", [j['job_id'] for j in jobs],
+            format_func=lambda jid: next(
+                (f"{j['job_id']} [{j['status']}] {j.get('trade_date', '')} "
+                 f"- {(j.get('message') or '')[:30]}"
+                 for j in jobs if j['job_id'] == jid), jid))
+        if sel_job:
+            hist_df = _store.results_df(sel_job)
+            if hist_df.empty:
+                st.info(f"任务 {sel_job} 暂无结果明细")
+            else:
+                st.caption(f"📊 任务 {sel_job} 结果明细 "
+                           f"（{len(hist_df)} 只）")
+                st.dataframe(hist_df, width="stretch")
+                st.download_button("⬇️ 下载该任务明细 CSV", hist_df.to_csv(
+                    index=False).encode('utf-8-sig'),
+                    file_name=f"scan_{sel_job}.csv", mime="text/csv")
+except Exception as e:
+    st.warning(f"⚠️ 扫描任务历史读取失败: {e}")
 
 if st.button("🚀 开始扫描", type="primary", width="stretch"):
     if scope == "核心自选池" and not (watchlist or selected):
@@ -190,10 +241,11 @@ if st.button("🚀 开始扫描", type="primary", width="stretch"):
         st.stop()
 
     # ===== 扫描结果缓存（docs/ui2.md: 行情未更新不重复扫描） =====
+    # 缓存键用最新交易日（而非自然日）：行情不更新时周末/同日重复扫描直接复用
     from db_manager import MysteryDB
     db = MysteryDB()
-    from datetime import date
-    scan_key = str(date.today())
+    from data.scan_store import ScanStore
+    scan_key = ScanStore.get_market_trade_date() or str(date.today())
     cached_scan = db.get_analysis_cache('__all__', 'full_scan', scan_key)
     if cached_scan and cached_scan.get('results'):
         st.success(f"⚡ 命中今日扫描缓存（{scan_key}，{len(cached_scan['results'])} 只）")

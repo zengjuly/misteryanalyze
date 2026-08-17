@@ -73,6 +73,22 @@ try:
 except Exception as e:
     st.warning(f"⚠️ 缓存信息获取失败: {e}")
 
+# ---------- 2.5 扫描结果独立库 ----------
+st.subheader("🔍 扫描结果独立库")
+try:
+    from data.scan_store import ScanStore
+    sstat = ScanStore().stats()
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("独立库路径", os.path.basename(sstat['db_path']))
+    sc2.metric("扫描任务数", f"{sstat['jobs']}")
+    sc3.metric("已完成任务", f"{sstat['finished']}")
+    sc4.metric("结果明细行数", f"{sstat['results']:,}")
+    st.caption(f"数据库大小: {sstat['size_mb']} MB · "
+               f"最新交易日(缓存键): {ScanStore.get_market_trade_date()} · "
+               f"行情未更新时同参数扫描自动命中缓存")
+except Exception as e:
+    st.warning(f"⚠️ 扫描结果库读取失败: {e}")
+
 # ---------- 3. 源健康报告 ----------
 st.subheader("📄 源健康报告")
 if st.button("🔄 生成源健康报告"):
