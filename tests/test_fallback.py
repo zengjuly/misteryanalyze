@@ -111,7 +111,8 @@ class TestFallbackSwitch(unittest.TestCase):
         self.assertGreaterEqual(len(failed), 1)
 
     def test_incremental_still_works(self):
-        """回归: fetch_daily 增量路径正常（毫秒级）"""
+        """回归: fetch_daily 正常返回（缓存最新时增量毫秒级；
+        缓存落后于最新交易日时主动回退在线源拉最新——2026-08-17 用户需求）"""
         import time
         import yaml
         from market_data_client import MarketDataClient
@@ -121,11 +122,15 @@ class TestFallbackSwitch(unittest.TestCase):
             cfg = yaml.safe_load(f)
         mc = MarketDataClient(cfg)
         t0 = time.time()
-        df = mc.fetch_daily('sh600150', '2026-07-01', '2026-08-14')
+        df = mc.fetch_daily('sh600150', '2026-07-01', '2026-08-17')
         elapsed = time.time() - t0
-        self.assertLess(elapsed, 5)
         self.assertFalse(df.empty)
         self.assertIn('收盘价', df.columns)
+        # 缓存已覆盖最新交易日 → 增量路径应毫秒级；
+        # 缓存落后（如周一未同步）→ 回退在线源属预期，不限制耗时
+        if not mc._cache_stale(df):
+            self.assertLess(elapsed, 5,
+                             f"缓存最新但耗时 {elapsed:.1f}s 异常")
 
 
 if __name__ == '__main__':

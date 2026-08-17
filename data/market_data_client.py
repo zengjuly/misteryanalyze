@@ -181,6 +181,26 @@ class MarketDataClient:
                 df[col] = None
         return df[_CN_COLS].copy()
 
+    @staticmethod
+    def _cache_stale(cached_cn: pd.DataFrame) -> bool:
+        """缓存最后日期是否落后于最近应有交易日（工作日，排除周末）
+        :param cached_cn: 中文列缓存 DataFrame
+        :return: True=落后应回退在线源；False=缓存已最新
+        """
+        from datetime import datetime, timedelta
+        if cached_cn is None or cached_cn.empty or '日期' not in cached_cn.columns:
+            return False
+        try:
+            last = pd.to_datetime(cached_cn['日期']).max().date()
+        except Exception:
+            return False
+        # 最近应有交易日: 从今天往前找第一个工作日（周末=上周五）
+        today = datetime.now().date()
+        expect = today
+        while expect.weekday() >= 5:  # 周六(5)/周日(6) → 回退到周五
+            expect -= timedelta(days=1)
+        return last < expect
+
     def _fetch_with_incremental(self, code: str, start_date: str,
                                 end_date: str) -> Optional[pd.DataFrame]:
         """
@@ -211,9 +231,18 @@ class MarketDataClient:
                 return None
 
             if delta.empty:
-                # 本地无新数据 → 直接返回缓存（毫秒级，零网络）
+                # 本地无新数据 → 判断缓存是否已覆盖最新交易日：
+                # 若缓存最后日期落后于最近应有交易日（工作日），说明本地数据
+                # 过期（如周一未同步上周五之后的数据），回退在线源拉最新。
+                # 周末/节假日自然回落（最近应有交易日=上周五，缓存已含）。
+                stale = self._cache_stale(cached_cn)
+                if stale:
+                    logger.info(f"⚠️ [{code}] 缓存最后日期落后于最近交易日，"
+                                f"回退在线源拉最新")
+                    return None
                 if not cached_cn.empty:
-                    logger.debug(f"⚡ [{code}] 增量无新数据，返回缓存 {len(cached_cn)} 条")
+                    logger.debug(f"⚡ [{code}] 增量无新数据，返回缓存 "
+                                 f"{len(cached_cn)} 条")
                     return self._slice(cached_cn, start_date, end_date)
                 return None
 
@@ -333,6 +362,16 @@ class MarketDataClient:
                             last_error = RuntimeError(f"{src} 换手率全None")
                             logger.info(f"[tdx_local] {code} {period} 换手率全None，"
                                         f"切换在线源补充")
+                            continue
+                        # 本地数据落后检查: tdx_local 数据停在旧交易日（如周一未同步
+                        # 上周五之后）→ 视为无效，切在线源拉最新（用户要求最新行情）
+                        if src == 'tdx_local' and self._cache_stale(df):
+                            self.source_health.record(src, True, latency)
+                            last_error = RuntimeError(
+                                f"{src} 数据落后(最新{df['日期'].max()})")
+                            logger.info(f"[tdx_local] {code} {period} 数据落后"
+                                        f"(最新{df['日期'].max()})，"
+                                        f"切换在线源拉最新")
                             continue
                         # 成功：记录健康分
                         self.source_health.record(src, True, latency)

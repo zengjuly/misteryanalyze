@@ -95,8 +95,20 @@ class TdxBlockClient:
         return result
 
     def to_code_map(self, blocks_df: pd.DataFrame) -> dict:
-        """板块 DataFrame → {code: 板块名}（code 为 sh600150 格式）"""
-        code_map = {}
+        """板块 DataFrame → {code: 主板块名}（每个股票取首个归属板块，兼容单值列）
+        :param blocks_df: get_industry_blocks 长表（blockname, code 每行一股）
+        :return: {sh600150: 板块名}
+        """
+        multi = self.to_multi_code_map(blocks_df)
+        return {c: b[0] for c, b in multi.items() if b}
+
+    def to_multi_code_map(self, blocks_df: pd.DataFrame) -> dict:
+        """板块 DataFrame → {code: [板块1, 板块2, ...]}（多归属，去重保序）
+        用户要求(2026-08-17): 一只股票可归属多个板块，不再"最后覆盖"
+        :param blocks_df: get_industry_blocks 长表（blockname, code 每行一股）
+        :return: {sh600150: ['中特估', '军工', ...]}
+        """
+        code_map: dict = {}
         if blocks_df is None or blocks_df.empty:
             return code_map
         code_col = 'code' if 'code' in blocks_df.columns else \
@@ -114,11 +126,16 @@ class TdxBlockClient:
             c6 = digits[-6:]
             mkt = 'sh' if c6.startswith(('6', '9', '5')) else (
                 'sz' if c6.startswith(('0', '2', '3')) else 'bj')
-            code_map[f"{mkt}.{c6}"] = str(row[name_col])
+            db_code = f"{mkt}.{c6}"
+            block = str(row[name_col])
+            if db_code not in code_map:
+                code_map[db_code] = []
+            if block not in code_map[db_code]:
+                code_map[db_code].append(block)
         return code_map
 
     def get_stock_industry(self, code: str) -> Optional[str]:
-        """单只股票所属行业（板块反查）"""
+        """单只股票所属行业（板块反查，返回主板块）"""
         code_map = self.to_code_map(self.get_industry_blocks())
         db_code = code if '.' in code else (code[:2] + '.' + code[2:])
         return code_map.get(db_code)

@@ -36,7 +36,7 @@ STANDARD_FIELDS = [
 # 数据库列名 → 标准中文名
 _DB_TO_CN = {
     'report_date': '报告期', 'roe': 'ROE', 'roe_avg': 'ROE_AVG',
-    'eps_ttm': 'EPS', 'PE': 'PE', 'PB': 'PB', 'divid_cash': '股息率',
+    'eps_ttm': 'EPS', 'PE': 'PE', 'PB': 'PB', 'divid_cash': '每股股息',
     'net_profit': '净利润', 'gp_margin': '毛利率', 'np_margin': '净利率',
 }
 
@@ -61,6 +61,8 @@ class FinancialStorage:
         if not data:
             return 0
         row = self._normalize_row(data)
+        # divid_cash 列语义=每股现金分红（元）；若上游只给股息率(%)则原样存
+        divid = row.get('每股股息', row.get('divid_cash'))
         return self.db.upsert_financial(
             code,
             str(row.get('报告期') or ''),
@@ -68,7 +70,7 @@ class FinancialStorage:
             np_margin=row.get('净利率'), gp_margin=row.get('毛利率'),
             net_profit=row.get('净利润'), eps_ttm=row.get('EPS'),
             pb=row.get('PB'), pe=row.get('PE'),
-            divid_cash=row.get('股息率'))
+            divid_cash=divid)
 
     def save_financial_df(self, code: str, df: pd.DataFrame,
                           report_date_col: str = '报告期') -> int:
@@ -96,16 +98,31 @@ class FinancialStorage:
 
     # ============ 查询 ============
     def load_latest(self, code: str) -> Dict:
-        """加载最新财务快照（报告期最新）"""
+        """加载最新财务快照（报告期最新）
+        :return: 含 每股股息（元）与 股息率（%，按最新收盘价换算，无价时 None）
+        """
         df = self.db.load_financial(code, limit=1)
         if df.empty:
             return {}
         r = df.iloc[0]
+        divid = r.get('divid_cash')
+        # 股息率 = 每股股息/最新收盘价 × 100（divid_cash 语义为每股现金分红）
+        div_yield = None
+        if divid:
+            try:
+                kdf = self.db.load_kline(code, 'daily')
+                if kdf is not None and not kdf.empty:
+                    close = float(kdf['close'].iloc[-1])
+                    if close > 0:
+                        div_yield = round(float(divid) / close * 100, 2)
+            except Exception:
+                pass
         return {
             '报告期': r.get('report_date'), 'ROE': r.get('roe'),
             'ROE_AVG': r.get('roe_avg'), 'EPS': r.get('eps_ttm'),
             'PE': r.get('PE'), 'PB': r.get('PB'),
-            '股息率': r.get('divid_cash'),
+            '每股股息': divid,
+            '股息率': div_yield,
             '净利润': r.get('net_profit'), '毛利率': r.get('gp_margin'),
             '净利率': r.get('np_margin'),
         }

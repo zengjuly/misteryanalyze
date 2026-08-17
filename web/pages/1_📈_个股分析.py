@@ -67,11 +67,25 @@ with c2:
     if pool_sel:
         selected = pool_sel
 
-if st.button("🚀 开始分析", type="primary", width="stretch"):
-    if not selected:
+# ---------- 从其他页面跳转：?code=sh600150 自动填充并分析 ----------
+_qp = st.query_params
+_jump_code = str(_qp.get('code', '')) if _qp else ''
+if _jump_code:
+    # 一次性跳转：分析完成后清除参数，避免每次 rerun 重复触发
+    try:
+        del _qp['code']
+    except Exception:
+        pass
+
+if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code:
+    if _jump_code:
+        code = _jump_code
+    elif not selected:
         st.warning("请选择或输入股票代码")
         st.stop()
-    code = resolve_code(selected)
+        code = None
+    else:
+        code = resolve_code(selected)
     if not code:
         st.warning("无法解析股票代码")
         st.stop()
@@ -147,7 +161,8 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
                     hist = fs.load_history(db_code, limit=8)
                     if hist is not None and not hist.empty:
                         with st.expander("📊 近三年 ROE 历史"):
-                            roe_df = hist[['报告期', 'roe']].dropna().tail(8)
+                            # load_financial 返回英文原始列（report_date/roe）
+                            roe_df = hist[['report_date', 'roe']].dropna().tail(8)
                             roe_df.columns = ['报告期', 'ROE']
                             st.dataframe(roe_df, width="stretch")
                 else:
@@ -163,8 +178,10 @@ if st.button("🚀 开始分析", type="primary", width="stretch"):
                 ap = analyze_adaptive_platform(daily, stock_code=code)
                 p1, p2, p3 = st.columns(3)
                 p1.metric("自适应平台 POC", ap.get('POC', 'N/A'))
-                p2.metric("平台上轨", ap.get('上轨', ap.get('upper', 'N/A')))
-                p3.metric("平台下轨", ap.get('下轨', ap.get('lower', 'N/A')))
+                p2.metric("平台上轨", ap.get(
+                    '自适应上轨', ap.get('上轨', ap.get('upper', 'N/A'))))
+                p3.metric("平台下轨", ap.get(
+                    '自适应下轨', ap.get('下轨', ap.get('lower', 'N/A'))))
             except Exception as e:
                 st.caption(f"自适应平台: {e}")
             plat = logic.platform_breakthrough_analysis(daily)

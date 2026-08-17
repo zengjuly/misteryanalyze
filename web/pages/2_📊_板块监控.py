@@ -142,7 +142,11 @@ try:
                 styled = rdf.style.map(
                     lambda v: 'background-color: #fdeaea' if v is True else '',
                     subset=['真三振'])
-                st.dataframe(styled, width="stretch", height=420)
+                # 代码列 → 点击跳转个股分析
+                from web.utils.table_links import render_code_link_table
+                render_code_link_table(styled.data if hasattr(
+                    styled, 'data') else rdf,
+                    code_col='代码', width="stretch", height=420)
                 st.info(f"🏆 龙头（真三振或评分≥85）: "
                         f"{', '.join(rdf[(rdf['真三振']) | (rdf['综合评分'] >= 85)]['代码'].tolist()) or '无'}")
             else:
@@ -150,7 +154,9 @@ try:
         else:
             comp = pd.DataFrame([{'代码': c, '名称': name_map.get(c, '')}
                                  for c in codes[:200]])
-            st.dataframe(comp, width="stretch", height=320)
+            from web.utils.table_links import render_code_link_table
+            render_code_link_table(comp, code_col='代码',
+                                   width="stretch", height=320)
 except Exception as e:
     st.error(f"❌ 板块数据加载失败: {e}")
     import traceback

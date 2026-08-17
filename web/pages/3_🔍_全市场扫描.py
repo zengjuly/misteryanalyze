@@ -168,7 +168,9 @@ if 'scan_job_id' in st.session_state:
                         f"{job['summary'].get('源任务')} 的结果，未重新扫描")
             df = ScanStore().results_df(job_id)
             if not df.empty:
-                st.dataframe(df, width="stretch")
+                # 股票代码列 → 点击跳转个股分析
+                from web.utils.table_links import render_code_link_table
+                render_code_link_table(df, width="stretch")
                 # Excel 下载（多 sheet: 全部 / 信号 / 真三振）
                 sig_df = df[df['信号'].astype(str).str.strip() != '无'] \
                     if '信号' in df.columns else df.iloc[0:0]
@@ -249,7 +251,9 @@ try:
             else:
                 st.caption(f"📊 任务 {sel_job} 结果明细 "
                            f"（{len(hist_df)} 只）")
-                st.dataframe(hist_df, width="stretch")
+                # 股票代码列 → 点击跳转个股分析（?code=sh600150，相对路径跨页跳转）
+                from web.utils.table_links import render_code_link_table
+                render_code_link_table(hist_df, width="stretch")
                 # 结果明细 Excel（多 sheet: 全部 / 信号 / 真三振）
                 sig_df = hist_df[hist_df['信号'].astype(str).str.strip() != '无'] \
                     if '信号' in hist_df.columns else hist_df.iloc[0:0]

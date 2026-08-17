@@ -169,7 +169,10 @@ class DataFeeder:
             tbc = TdxBlockClient()
             blocks = tbc.get_industry_blocks()
             if blocks is not None and not blocks.empty:
-                code_map = tbc.to_code_map(blocks)
+                # 多归属: {code: [板块1, 板块2...]}（用户要求一只股票可属多个板块）
+                multi_map = tbc.to_multi_code_map(blocks)
+                # code_map 主板块（首个归属）——兼容 db 单值列与扫描行业得分
+                code_map = {c: b[0] for c, b in multi_map.items() if b}
                 if code_map:
                     try:
                         from db_manager import MysteryDB
@@ -178,11 +181,14 @@ class DataFeeder:
                                     f"{len(code_map)} 只")
                     except Exception as e:
                         logger.warning(f"⚠️ 通达信板块填充 db 失败: {e}")
+                    # industry_codes: 板块 → [codes]（多归属——同一code出现在多个板块）
                     industry_codes = {}
-                    for c, ind in code_map.items():
-                        industry_codes.setdefault(str(ind), []).append(c)
+                    for c, blocks_list in multi_map.items():
+                        for b in blocks_list:
+                            industry_codes.setdefault(str(b), []).append(c)
                     return {'code_map': code_map,
                             'industry_codes': industry_codes,
+                            'multi_map': multi_map,
                             'source': 'tdx'}
         except Exception as e:
             logger.debug(f"TDX 板块读取跳过: {str(e)[:60]}")

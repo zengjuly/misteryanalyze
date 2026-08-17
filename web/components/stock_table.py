@@ -23,7 +23,10 @@ def render_stock_table(results: list, show_export: bool = True):
         lambda v: 'background-color: #fdeaea' if v is True else '',
         subset=['真三振'] if '真三振' in show.columns else None,
     )
-    st.dataframe(styled, width="stretch", height=420)
+    # 股票代码列 → 点击跳转个股分析
+    from web.utils.table_links import render_code_link_table
+    render_code_link_table(styled.data if hasattr(styled, 'data') else show,
+                           code_col='股票代码', width="stretch", height=420)
     if show_export:
         c1, c2 = st.columns(2)
         with c1:

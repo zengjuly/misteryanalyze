@@ -329,6 +329,7 @@ class BaostockClient:
             
             # 获取盈利能力指标（自动查询最新报告期）
             profit_df = pd.DataFrame()
+            profit_stat = None  # 报告期（用于ROE年化判断）
             for year, quarter in [(2026, 1), (2025, 4), (2025, 3)]:
                 try:
                     profit_data = bs.query_profit_data(code=stock_code, year=year, quarter=quarter)
@@ -336,6 +337,7 @@ class BaostockClient:
                         tmp_df = profit_data.get_data()
                         if not tmp_df.empty:
                             profit_df = tmp_df
+                            profit_stat = f"{year}-{quarter}"
                             break
                 except Exception:
                     continue
@@ -345,6 +347,17 @@ class BaostockClient:
                 financial_data['ROE'] = float(row.get('roeAvg', 0)) if pd.notna(row.get('roeAvg', None)) else None
                 financial_data['EPS'] = float(row.get('epsTTM', 0)) if pd.notna(row.get('epsTTM', None)) else None
                 financial_data['报告期'] = str(row.get('statDate', ''))
+                # ROE 年化: 报告期是单季（Q1/Q2/Q3）时 ROE 为累计值（非年化），
+                # 每股净资产 = EPS_TTM / ROE年化，否则 PB 严重低估（曾把 Q1 3.3% 当全年）
+                if financial_data['ROE']:
+                    roe_annual = float(financial_data['ROE'])
+                    if profit_stat and profit_stat.endswith('-1'):
+                        roe_annual *= 4.0      # Q1 累计 → 年化
+                    elif profit_stat and profit_stat.endswith('-2'):
+                        roe_annual *= 2.0      # 半年 → 年化
+                    elif profit_stat and profit_stat.endswith('-3'):
+                        roe_annual *= 4.0 / 3.0  # 前三季 → 年化
+                    financial_data['ROE_年化'] = round(roe_annual, 4)
             
             # 获取分红数据（最近年度，计算股息率）
             try:
@@ -366,9 +379,9 @@ class BaostockClient:
             if current_price and current_price > 0:
                 if financial_data['EPS']:
                     financial_data['PE'] = round(current_price / financial_data['EPS'], 2)
-                if financial_data['ROE'] and financial_data['EPS']:
-                    # PB = 股价 / 每股净资产；每股净资产 = EPS / ROE
-                    bps = financial_data['EPS'] / financial_data['ROE'] if financial_data['ROE'] > 0 else None
+                if financial_data['ROE_年化'] and financial_data['EPS']:
+                    # PB = 股价 / 每股净资产；每股净资产 = EPS_TTM / ROE年化
+                    bps = financial_data['EPS'] / financial_data['ROE_年化'] if financial_data['ROE_年化'] > 0 else None
                     if bps:
                         financial_data['PB'] = round(current_price / bps, 2)
                 if financial_data['每股股息']:
