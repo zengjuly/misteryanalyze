@@ -200,6 +200,17 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
             result['三振评分'] = three.get('共振评分')
             result['真三振'] = three.get('真三振')
             result['三振级别'] = three.get('共振级别')
+            result['综合评分'] = three.get('共振评分') or 0
+        # 与个股分析一致的字段（设计原则 2026-08-17: 板块/扫描每只股票
+        # 内容与个股分析保持一致——补 共振级别/操作建议/主升浪信号/资金活跃）
+        if three.get('共振级别'):
+            result['共振级别'] = three.get('共振级别')
+        if three.get('共振建议') is not None:
+            result['操作建议'] = three.get('共振建议')
+        if three.get('主升浪信号') is not None:
+            result['主升浪信号'] = three.get('主升浪信号')
+        if three.get('资金活跃') is not None:
+            result['资金活跃'] = three.get('资金活跃')
         return result
     except Exception as e:
         logger.warning(f"⚠️ {code} 扫描异常: {e}")

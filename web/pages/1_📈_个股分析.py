@@ -62,8 +62,20 @@ with c1:
         label="🔍 代码/名称模糊搜索",
         placeholder="输入代码或名称，如 600150 / 中国船舶")
 with c2:
-    pool_names = [f"{s} - {stock_dict.get(s, '')}" for s in cfg.get('stocks', [])]
-    pool_sel = st.selectbox("或从股票池选择", [''] + pool_names)
+    # 股票池 = 自选股列表（watchlist_manager 独立库，sh.600150 格式）
+    try:
+        from watchlist_manager import WatchlistManager
+        wl = WatchlistManager().list_all()
+        wl_codes = wl['code'].tolist() if not wl.empty else []
+        # 自选股 code(sh.600150) → 无点格式匹配 stock_dict
+        pool_names = [
+            f"{c.replace('.', '')} - {stock_dict.get(c.replace('.', ''), n)}"
+            for c, n in zip(wl_codes,
+                            wl['name'].tolist() if not wl.empty else [])]
+    except Exception:
+        pool_names = [f"{s} - {stock_dict.get(s, '')}"
+                      for s in cfg.get('stocks', [])]
+    pool_sel = st.selectbox("⭐ 自选股", [''] + pool_names)
     if pool_sel:
         selected = pool_sel
 

@@ -42,6 +42,39 @@ st.caption("独立自选股（与真三振池解耦，docs/081601.md）："
 from data.watchlist_manager import WatchlistManager
 wm = WatchlistManager()
 
+# ---------- 从通达信安装目录同步自选股（docs 2026-08-17） ----------
+st.caption("📂 支持从通达信安装目录（T0002/blocknew/zxg.blk）一键同步自选股")
+sync_c1, sync_c2, sync_c3 = st.columns([1, 1, 2])
+with sync_c1:
+    if st.button("📂 从通达信同步自选股", type="primary"):
+        try:
+            from data.tdx_watchlist_sync import (sync_from_tdx,
+                                                 resolve_tdx_home)
+            home = resolve_tdx_home() or "未定位"
+            with st.spinner(f"正在从通达信同步（{home}）..."):
+                res = sync_from_tdx(mode='merge')
+            if res['total'] > 0:
+                st.success(f"✅ 已从通达信同步 {res['total']} 只自选股"
+                           f"（新增 {res['synced']} 只，"
+                           f"当前共 {res['watchlist']} 只）")
+                st.rerun()
+            else:
+                st.warning(f"⚠️ 未解析到自选股（{home}），"
+                           f"请确认通达信安装目录存在 zxg.blk")
+        except Exception as e:
+            st.error(f"❌ 同步失败: {e}")
+with sync_c2:
+    if st.button("♻️ 全量替换（以通达信为准）"):
+        try:
+            from data.tdx_watchlist_sync import sync_from_tdx
+            with st.spinner("正在全量替换..."):
+                res = sync_from_tdx(mode='replace')
+            st.success(f"✅ 全量替换完成: TDX {res['total']} 只，"
+                       f"当前共 {res['watchlist']} 只")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ 替换失败: {e}")
+
 # ---------- 添加（搜索框在 form 外——自定义组件与 form 兼容问题，docs/081601.md） ----------
 selected = st_searchbox(
     _search_options, key="watch_searchbox",

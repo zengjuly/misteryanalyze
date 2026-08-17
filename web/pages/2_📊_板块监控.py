@@ -123,6 +123,17 @@ try:
                     if d is None or d.empty:
                         continue
                     sig = logic.comprehensive_signal_analysis(d, weekly_data=None)
+                    # 与个股分析一致的明细字段（设计原则: 板块/扫描结果
+                    # 每只股票内容与个股分析保持一致，2026-08-17）
+                    try:
+                        from analysis.adaptive_platform import (
+                            analyze_adaptive_platform)
+                        ap = analyze_adaptive_platform(d, stock_code=cc)
+                        plat_info = logic.platform_breakthrough_analysis(d)
+                        chip_info = logic.technical_detail_capture(d)
+                        bull = logic.main_bull_wave_checklist(d)
+                    except Exception:
+                        ap, plat_info, chip_info, bull = {}, {}, {}, {}
                     results.append({
                         '代码': cc,
                         '名称': name_map.get(c, ''),
@@ -131,6 +142,14 @@ try:
                         '主升浪信号': sig.get('主升浪信号', False),
                         '共振级别': sig.get('共振级别', '无共振'),
                         '操作建议': sig.get('操作建议', '观望'),
+                        'POC': ap.get('POC'),
+                        '平台上轨': ap.get('自适应上轨'),
+                        '平台下轨': ap.get('自适应下轨'),
+                        '平台状态': plat_info.get('平台状态', ''),
+                        '筹码集中度': chip_info.get('筹码集中度', ''),
+                        '主升浪满足': bull.get('满足数量', 0),
+                        '最新价': float(d['收盘价'].iloc[-1])
+                        if '收盘价' in d.columns else None,
                     })
                 except Exception:
                     continue

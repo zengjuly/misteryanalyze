@@ -121,14 +121,23 @@ class TestFallbackSwitch(unittest.TestCase):
         with open(cfg_path, encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
         mc = MarketDataClient(cfg)
+        # 数据库缓存是否已覆盖最新交易日（决定增量毫秒级 or 回退在线源）
+        try:
+            from db_manager import MysteryDB
+            db_last = MysteryDB().get_last_date(
+                'sh.600150', 'daily')
+            cache_latest = not mc._cache_stale(
+                pd.DataFrame({'日期': [db_last]})) if db_last else False
+        except Exception:
+            cache_latest = False
         t0 = time.time()
         df = mc.fetch_daily('sh600150', '2026-07-01', '2026-08-17')
         elapsed = time.time() - t0
         self.assertFalse(df.empty)
         self.assertIn('收盘价', df.columns)
-        # 缓存已覆盖最新交易日 → 增量路径应毫秒级；
+        # 数据库缓存已最新 → 增量路径应毫秒级；
         # 缓存落后（如周一未同步）→ 回退在线源属预期，不限制耗时
-        if not mc._cache_stale(df):
+        if cache_latest:
             self.assertLess(elapsed, 5,
                              f"缓存最新但耗时 {elapsed:.1f}s 异常")
 

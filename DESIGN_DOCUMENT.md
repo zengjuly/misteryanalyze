@@ -1285,7 +1285,6 @@ tdx_block 降级/后台任务）、页面渲染 7/7（含新页面6）
 output git 远端推送成功（7bfd57f）、页3/页5 AppTest 渲染、py_compile 全绿
 
 ### 4.14 通达信安装目录更新 /mnt/new_tdx（v1.16.0，2026-08-17）
-
 **需求**：通达信安装目录更新为 `/mnt/new_tdx`，历史 tdx_local 策略的
 行情和板块信息优先从此获取。
 
@@ -1308,6 +1307,31 @@ output git 远端推送成功（7bfd57f）、页3/页5 AppTest 渲染、py_compi
   MarketDataClient 行情 600150 收盘 33.42（08-14 最新交易日）；
   DataFeeder.get_industry_data source=tdx（600150→中特估、600519→白酒概念、
   300750→小米汽车）；单测 58/58
+
+### 4.15 设计原则: 板块/扫描结果与个股分析一致 + 自选股 TDX 同步（v1.16.0，2026-08-17）
+
+**设计原则（用户确立）**：板块监控钻取、市场扫描结果的每只股票分析内容
+**必须与个股分析页一致**——同一套分析管线（三振共振四维 + 自适应VAP-ATR平台
++ 筹码集中度 + 主升浪8项），字段对齐（综合评分/共振级别/真三振/操作建议/
+POC/平台上轨/平台下轨/平台状态/筹码集中度/主升浪满足/最新价）。
+
+**改动**：
+- 页2 板块钻取补全字段：新增 POC/平台上轨/平台下轨/平台状态/筹码集中度/
+  主升浪满足/最新价（与个股分析同源: analyze_adaptive_platform +
+  platform_breakthrough_analysis + technical_detail_capture +
+  main_bull_wave_checklist）
+- run_market_scan 三振结果补：综合评分=共振评分、共振级别、操作建议=
+  共振建议、主升浪信号、资金活跃（原综合评分恒 0 已修复）
+- 页1 股票池改自选股：下拉框「⭐ 自选股」= watchlist_manager 列表
+  （sh.600150 格式转无点匹配 stock_dict），不再用 config stocks
+- 新增 `data/tdx_watchlist_sync.py`：解析通达信安装目录
+  `T0002/blocknew/zxg.blk`（文本格式: 每行市场前缀+6位代码）→ 写入
+  watchlist 表；支持 merge（增量）与 replace（全量替换）两种模式；
+  过滤 88/99 开头概念指数
+- 页6 自选股页新增「📂 从通达信同步自选股」（merge）与
+  「♻️ 全量替换（以通达信为准）」（replace）按钮
+- 实测：zxg.blk 37 只（过滤 881418 概念指数后 36 只）→ merge 同步新增 36 只，
+  watchlist 共 66 只
 
 ## 5. 接口设计
 
