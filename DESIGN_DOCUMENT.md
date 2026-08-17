@@ -1127,7 +1127,7 @@ data_source:
 **目标**：本地数据新鲜则零网络；过期/缺失自动回退 akshare → baostock。最小改动贴合现有框架。
 
 **路径规则（tdx_path_resolver.py 新建）**：
-- `resolve_home()`：TDX_HOME env > config tdx.home_dir > 默认 /mnt/bigdata/tdx/files/new_tdx
+- `resolve_home()`：TDX_HOME env > config tdx.home_dir > 默认 /mnt/new_tdx（2026-08-17 通达信安装目录更新）
 - `resolve_kline_dirs()`：**日K目录优先级列表（用户要求: 优先 TDX_HOME 失败则
   TDX_VIPDOC_DIR）**——[home/vipdoc(含lday), TDX_VIPDOC_DIR(含lday)] 去重；
   TdxLocalClient.get_daily_data 逐目录遍历：home 无该股 .day/过期 → 下一目录 → 协议 → 在线源
@@ -1283,6 +1283,31 @@ tdx_block 降级/后台任务）、页面渲染 7/7（含新页面6）
 **验证**：scan_store 自检（建表/写读/缓存命中/参数不同不命中）、
 真实扫描 3 只 → 二次缓存命中 0s、Excel 内容真实（股票名称/POC/筹码值）、
 output git 远端推送成功（7bfd57f）、页3/页5 AppTest 渲染、py_compile 全绿
+
+### 4.14 通达信安装目录更新 /mnt/new_tdx（v1.16.0，2026-08-17）
+
+**需求**：通达信安装目录更新为 `/mnt/new_tdx`，历史 tdx_local 策略的
+行情和板块信息优先从此获取。
+
+**改动**：
+- `config.yaml tdx.home_dir` → `/mnt/new_tdx`；`tdx_path_resolver`
+  `DEFAULT_TDX_HOME` 同步；`.bashrc` 新增 `export TDX_HOME=/mnt/new_tdx`
+  （env 覆盖 config 是硬规则）
+- **修复 TdxLocalClient 显式目录绕过 TDX_HOME 优先级**：原逻辑
+  `vipdoc_dir is None → resolve_kline_dirs() else [vipdoc_dir]`——
+  MarketDataClient 构造时显式传 config 旧目录 → TDX_HOME 被绕过。
+  改为：始终以 `resolve_kline_dirs()` 为准（TDX_HOME/vipdoc 优先），
+  显式 vipdoc_dir 仅作补充目录追加
+- **MarketDataClient.tdx_incremental 目录同步优先 TDX_HOME**（原
+  resolve_path TDX_VIPDOC_DIR 指向旧目录）
+- **修复 TdxBlockClient 板块解析 0 条**：get_industry_blocks group 格式
+  返回 `code_list` 逗号串列，to_code_map 期望每行一 code → 展开长表
+  （blockname, code 每行一股）后解析；实测 264 板块 → 长表 32524 行 →
+  code_map 5144 只
+- **验证链路**：resolve_kline_dirs = [/mnt/new_tdx/vipdoc, 旧vipdoc]；
+  MarketDataClient 行情 600150 收盘 33.42（08-14 最新交易日）；
+  DataFeeder.get_industry_data source=tdx（600150→中特估、600519→白酒概念、
+  300750→小米汽车）；单测 58/58
 
 ## 5. 接口设计
 

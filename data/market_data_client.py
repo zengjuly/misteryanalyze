@@ -97,11 +97,14 @@ class MarketDataClient:
         # 本地缓存数据库（增量锚点/缓存合并用）
         self.db = MysteryDB()
         # 通达信增量更新器（.day文件尾部读取）
-        vipdoc_dir = resolve_path('TDX_VIPDOC_DIR',
-                                  tdx_cfg.get("vipdoc_dir"),
-                                  "/home/ai/ai_runner/stock/data/tdx_vipdoc")
+        # 用户要求(2026-08-17): 行情优先从通达信安装目录 TDX_HOME(/mnt/new_tdx) 获取
+        from tdx_path_resolver import resolve_kline_dirs
+        inc_dirs = resolve_kline_dirs()
+        inc_vipdoc = inc_dirs[0] if inc_dirs else resolve_path(
+            'TDX_VIPDOC_DIR', tdx_cfg.get("vipdoc_dir"),
+            "/home/ai/ai_runner/stock/data/tdx_vipdoc")
         self.tdx_incremental = TdxIncremental(
-            vipdoc_dir=vipdoc_dir,
+            vipdoc_dir=inc_vipdoc,
             db_manager=self.db,
             max_bars_per_request=int(inc_cfg.get("max_bars_per_request", 800)))
         # 除权除息因子（gbbq文件可选，无则走连续性检查）

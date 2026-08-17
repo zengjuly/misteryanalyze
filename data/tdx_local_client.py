@@ -57,10 +57,12 @@ class TdxLocalClient:
         # 用户要求: tdxlocal 内部分优先级——优先 TDX_HOME，失败则 TDX_VIPDOC_DIR
         from tdx_path_resolver import (resolve_kline_dirs,
                                        resolve_vipdoc_for_fin)
-        if vipdoc_dir is None:
-            self.kline_dirs = resolve_kline_dirs()
-        else:
-            self.kline_dirs = [vipdoc_dir]
+        # 始终以 resolve_kline_dirs() 为准（TDX_HOME/vipdoc 优先，含 lday 才启用）；
+        # 显式 vipdoc_dir 只作为补充目录追加（不覆盖 TDX_HOME 优先级——用户要求
+        # 行情优先从通达信安装目录获取，2026-08-17 更新为 /mnt/new_tdx）
+        self.kline_dirs = resolve_kline_dirs()
+        if vipdoc_dir is not None and vipdoc_dir not in self.kline_dirs:
+            self.kline_dirs.append(vipdoc_dir)
         self.vipdoc_dir = self.kline_dirs[0]
         self.fin_dir = resolve_vipdoc_for_fin()
         self.enable = enable and MOOTDX_AVAILABLE

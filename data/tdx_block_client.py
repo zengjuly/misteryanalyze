@@ -42,13 +42,26 @@ class TdxBlockClient:
         return self.reader is not None
 
     def get_industry_blocks(self, group: bool = True) -> pd.DataFrame:
-        """通达信行业板块（优先 block_gn.dat 概念/行业，其次 block.dat/incon.dat）"""
+        """通达信行业板块（优先 block_gn.dat 概念/行业，其次 block.dat/incon.dat）
+        :return: 长表（blockname, code）——group 输入的 code_list 列展开为每行一股
+        """
         if not self._available():
             return pd.DataFrame()
         for kind, fname in [('概念', 'block_gn.dat'), ('行业', 'block.dat')]:
             try:
                 df = self.reader.block(symbol=fname, group=group)
                 if df is not None and not df.empty:
+                    # group 格式: code_list 是逗号分隔串 → 展开为长表
+                    if 'code_list' in df.columns and 'code' not in df.columns:
+                        rows = []
+                        for _, r in df.iterrows():
+                            for c in str(r['code_list']).split(','):
+                                c = c.strip()
+                                if c:
+                                    rows.append({'blockname': r.get(
+                                        'blockname', ''), 'code': c})
+                        if rows:
+                            return pd.DataFrame(rows)
                     return df
             except Exception as e:
                 logger.debug(f"读取 {fname} 失败: {str(e)[:60]}")

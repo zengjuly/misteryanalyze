@@ -17,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # 默认值（docs/tdx2.md）
-DEFAULT_TDX_HOME = "/mnt/bigdata/tdx/files/new_tdx"
+DEFAULT_TDX_HOME = "/mnt/new_tdx"
 DEFAULT_VIPDOC_DIR = "/home/ai/ai_runner/stock/data/tdx_vipdoc"
 DEFAULT_MAX_AGE = {"kline": 1, "block": 3, "financial": 30}
 

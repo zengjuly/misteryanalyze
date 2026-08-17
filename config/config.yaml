@@ -224,7 +224,7 @@ scheduler:
 
 # 通达信本地数据（docs/tdx2.md 本地优先+过期回退）
 tdx:
-  home_dir: "/mnt/bigdata/tdx/files/new_tdx"      # TDX_HOME 覆盖；日K(含vipdoc)与板块
+  home_dir: "/mnt/new_tdx"      # TDX_HOME 覆盖；日K(含vipdoc)与板块（2026-08-17 更新）
   vipdoc_dir: "/home/ai/ai_runner/stock/data/tdx_vipdoc"  # TDX_VIPDOC_DIR 覆盖；财务专用(含cw/)
   freshness:
     kline_max_age_days: 1        # 日K末根K线超过N天视为过期→fallback在线源
