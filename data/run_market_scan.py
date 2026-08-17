@@ -97,7 +97,8 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
                       market_data: dict = None,
                       sector_map: dict = None,
                       ind_map: dict = None,
-                      sys_obj=None) -> dict:
+                      sys_obj=None,
+                      latest: bool = False) -> dict:
     """
     扫描单只股票：自适应窗口 + VAP-ATR + 主升浪指标 + 三振共振 + 信号捕获
     :param engine: 数据引擎
@@ -108,13 +109,17 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
     :param sector_map: 板块得分 {板块名: 得分}（扫描前置构建一次）
     :param ind_map: 行业归属 {code: 行业名}（扫描前置构建一次）
     :param sys_obj: StockAnalysisSystem 实例（循环外构造一次，避免每只重建）
+    :param latest: 强制最新行情（2026-08-17 用户需求）：绕过本地缓存直读
+        MarketDataClient（内部 stale 判断：缓存已最新→毫秒级返回；落后→
+        在线源拉最新交易日）。板块/自选股等小范围扫描启用，全市场默认 False
     :return: 分析结果字典
     """
     from main import StockAnalysisSystem
 
     try:
-        # 从本地缓存加载行情（Cache-Aside：未命中自动回填）
-        kline = engine.get_kline(code, period)
+        # 从本地缓存加载行情（Cache-Aside：未命中自动回填）；
+        # latest=True 时强制走 fetch_daily 的 stale 回退（最新行情）
+        kline = engine.get_kline(code, period, force_refresh=latest)
         if kline is None or kline.empty:
             return {'股票代码': code, '综合评分': 0, '信号': '数据不足'}
 
@@ -343,10 +348,13 @@ def run_market_scan(limit: int = None, period: str = 'daily',
                     enable_main_wave: bool = True,
                     use_cache: bool = True,
                     job_id: str = None,
-                    progress_cb=None) -> dict:
+                    progress_cb=None,
+                    codes: list = None,
+                    scope_name: str = '',
+                    latest: bool = False) -> dict:
     """
     全量扫描分析主函数
-    :param limit: 扫描股票数量限制
+    :param limit: 扫描股票数量限制（与 codes 互斥，None 时扫描全市场）
     :param period: K线周期
     :param sync_first: 是否先同步数据
     :param top_n: 生成报告的Top N（按信号数/评分排序）
@@ -357,13 +365,23 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         行情不更新不需要重复执行）
     :param job_id: 后台任务ID（run_market_scan_background 传入；前台自动创建）
     :param progress_cb: 进度回调 fn(progress: float, message: str)
+    :param codes: 显式扫描股票列表（板块成分股/自选股，2026-08-17 用户需求：
+        市场扫描支持按板块或自选股扫描；传入后忽略 limit 截断）
+    :param scope_name: 扫描范围名称（板块名/自选股，报告与任务备注用）
+    :param latest: 使用最新行情（stale 回退在线源，小范围扫描建议开启）
     """
     from data.scan_store import ScanStore
     store = ScanStore()
+    # 显式股票列表（板块/自选股）也参与缓存键区分（2026-08-17 用户需求）
+    codes_sig = None
+    if codes is not None:
+        codes_sig = '|'.join(sorted(codes))
     params = {
         'period': period, 'limit': limit, 'sync_first': sync_first,
         'top_n': top_n, 'enable_three_strike': enable_three_strike,
         'enable_main_wave': enable_main_wave,
+        'scope_name': scope_name,
+        'codes': codes_sig,
     }
     trade_date = store.get_market_trade_date()
 
@@ -412,9 +430,13 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     if job_id is None:
         job_id = store.create_job(params, trade_date)
 
-    # 1. 加载缓存股票列表
-    codes = load_local_cached_tickers(engine, period, limit=limit,
-                                      force_sync=sync_first)
+    # 1. 扫描范围: 显式 codes（板块/自选股）优先，否则全市场缓存列表
+    if codes is not None:
+        codes = list(codes)
+        logger.info(f"🎯 扫描范围: {scope_name or '自定义'} {len(codes)} 只")
+    else:
+        codes = load_local_cached_tickers(engine, period, limit=limit,
+                                          force_sync=sync_first)
 
     # 1.5 三振前置数据（一次性构建，docs/081601.md: 使能三振）
     market_data = {}
@@ -449,7 +471,8 @@ def run_market_scan(limit: int = None, period: str = 'daily',
                               enable_main_wave=enable_main_wave,
                               market_data=market_data,
                               sector_map=sector_map,
-                              ind_map=ind_map)
+                              ind_map=ind_map,
+                              latest=latest)
         results.append(r)
         if i % 100 == 0 or i == total:
             logger.info(f"⏳ 扫描进度: {i}/{total}")
@@ -464,6 +487,8 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     # 3. 补充股票名称（从缓存证券信息表）
     info_df = engine.db.get_stock_info(stock_only=True)
     name_map = dict(zip(info_df['code'], info_df['code_name'])) if not info_df.empty else {}
+    # 兼容带点/无点格式（板块/自选股 codes 传无点，db 存带点）
+    name_map.update({k.replace('.', ''): v for k, v in name_map.items()})
     for r in results:
         if '股票代码' in r:
             r['股票名称'] = name_map.get(r['股票代码'], r['股票代码'])
@@ -544,8 +569,14 @@ def run_market_scan_background(limit: int = None, period: str = 'daily',
                                sync_first: bool = False, top_n: int = 20,
                                output_dir: str = None,
                                enable_three_strike: bool = True,
-                               enable_main_wave: bool = True) -> str:
+                               enable_main_wave: bool = True,
+                               codes: list = None,
+                               scope_name: str = '',
+                               latest: bool = False) -> str:
     """后台运行全市场扫描（独立库 scan_results.db + daemon 线程）
+    :param codes: 显式扫描股票列表（板块成分股/自选股，None=全市场）
+    :param scope_name: 扫描范围名称（板块名/自选股，报告与任务备注用）
+    :param latest: 使用最新行情（stale 回退在线源）
     :return: job_id（供 Web 页轮询）
     """
     import threading
@@ -556,6 +587,8 @@ def run_market_scan_background(limit: int = None, period: str = 'daily',
         'period': period, 'limit': limit, 'sync_first': sync_first,
         'top_n': top_n, 'enable_three_strike': enable_three_strike,
         'enable_main_wave': enable_main_wave,
+        'scope_name': scope_name,
+        'codes': '|'.join(sorted(codes)) if codes else None,
     }
     job_id = store.create_job(params)
 
@@ -566,14 +599,16 @@ def run_market_scan_background(limit: int = None, period: str = 'daily',
                 top_n=top_n, output_dir=output_dir,
                 enable_three_strike=enable_three_strike,
                 enable_main_wave=enable_main_wave,
-                use_cache=True, job_id=job_id)
+                use_cache=True, job_id=job_id,
+                codes=codes, scope_name=scope_name, latest=latest)
         except Exception as e:
             store.finish_job(job_id, 'failed', message=str(e)[:200])
             logger.error(f"❌ 后台扫描失败 {job_id}: {e}")
 
     t = threading.Thread(target=_worker, daemon=True, name=f'scan-{job_id}')
     t.start()
-    logger.info(f"🚀 后台扫描任务已提交: {job_id}")
+    logger.info(f"🚀 后台扫描任务已提交: {job_id}"
+                f"（范围: {scope_name or '全市场'} {len(codes) if codes else ''}只）")
     return job_id
 
 
@@ -586,9 +621,19 @@ if __name__ == '__main__':
     parser.add_argument('--top', type=int, default=20, help='报告Top N')
     parser.add_argument('--no-cache', action='store_true',
                         help='忽略扫描结果缓存（行情未更新时默认复用上次结果）')
+    parser.add_argument('--codes', nargs='*', default=None,
+                        help='显式扫描股票列表（板块/自选股，空格分隔，如 '
+                             'sh600150 sz000915）；缺省=全市场')
+    parser.add_argument('--scope', default='',
+                        help='扫描范围名称（板块名/自选股，写任务备注）')
+    parser.add_argument('--latest', action='store_true',
+                        help='使用最新行情（stale 回退在线源，小范围建议开启）')
     args = parser.parse_args()
 
     result = run_market_scan(limit=args.limit, period=args.period,
                              sync_first=args.sync, top_n=args.top,
-                             use_cache=not args.no_cache)
+                             use_cache=not args.no_cache,
+                             codes=args.codes,
+                             scope_name=args.scope,
+                             latest=args.latest)
     print(f"\n📊 扫描结果: {result}")

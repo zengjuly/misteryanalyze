@@ -113,6 +113,7 @@ with st.sidebar:
     else:
         selected = st.multiselect("选择股票", stock_pool, default=stock_pool[:5])
     # 指定板块筛选（docs/ui2.md: 通达信行业板块）
+    sel_industry = "全部板块"  # 默认（板块数据不可用时也保证变量有值）
     try:
         ind_map = get_feeder().get_industry_data()
         ind_codes = ind_map.get('industry_codes', {})
@@ -132,17 +133,30 @@ with st.sidebar:
     st.subheader("🖥️ 后台扫描")
     bg_enable_3z = st.checkbox("使能三振分析", value=True)
     bg_enable_mw = st.checkbox("使能主升浪", value=True)
+    bg_latest = st.checkbox("最新行情（缓存落后自动拉在线源）", value=True,
+                            help="板块/自选股小范围扫描建议开启；"
+                                 "全市场开启会较慢（每只落后股票走在线源）")
     if st.button("🚀 提交后台扫描", type="primary", width="stretch"):
         from data.run_market_scan import run_market_scan_background
         bg_codes = selected if selected is not None else None
+        # 范围名称（板块/自选股，报告与任务备注用）
+        if scope != "全市场A股" and bg_codes:
+            bg_scope = scope if scope != "核心自选池" else "自选股"
+        else:
+            bg_scope = ""
+        if sel_industry != "全部板块" and bg_codes:
+            bg_scope = f"板块[{sel_industry}]"
         limit = len(bg_codes) if bg_codes else None
         job_id = run_market_scan_background(
             limit=limit, period='daily', sync_first=False, top_n=20,
             enable_three_strike=bg_enable_3z,
-            enable_main_wave=bg_enable_mw)
+            enable_main_wave=bg_enable_mw,
+            codes=bg_codes, scope_name=bg_scope, latest=bg_latest)
         st.session_state['scan_job_id'] = job_id
-        st.success(f"🚀 后台任务已提交: {job_id}（可在下方查看进度，"
-                   f"或到 ⚙️ 系统状态页查看）")
+        st.success(f"🚀 后台任务已提交: {job_id}（范围: "
+                   f"{bg_scope or '全市场'} {limit or '全部'} 只，"
+                   f"最新行情: {'开' if bg_latest else '关'}；"
+                   f"可在下方查看进度，或到 ⚙️ 系统状态页查看）")
 
 # ===== 后台任务状态轮询（docs/081601.md §四 + 独立库 scan_results.db） =====
 if 'scan_job_id' in st.session_state:
