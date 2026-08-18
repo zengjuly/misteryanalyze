@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.16.1
+- **版本**: 1.17.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-18
 - **文档类型**: 系统设计文档
@@ -1354,6 +1354,38 @@ Excel 汇总（excel_generator）与 HTML 用 `result.get('所属板块')`，
 制造业/...）构造 analysis_results，`_generate_statistics_details` 行业
 分布全部正确聚合（含旧键样本 J66 与缺失样本计「未知」）。
 
+### 4.17 每日分析改为自选股模式（v1.17.0，2026-08-18）
+
+**需求**：每日 daily 分析任务由「config 静态股票列表（18只）」改为
+「分析自选股列表（watchlist 表，66只）」——用户通过页6/通达信同步维护
+自选股，希望每日分析跟随自选股动态变化。
+
+**实现**：
+- `run_analysis.py` 新增 `--watchlist` 参数：daily 模式下从
+  `WatchlistManager`（data/watchlist_manager.py）读取 watchlist 表全部
+  代码，转无点格式（`sh.600150` → `sh600150`，与 config 股票格式一致，
+  main.py 行业分析用 `peer.replace('.', '')` 匹配 processed_data 键，
+  带点格式会退化）后传入分析管线。
+- `main.py` `run_daily_analysis(stock_codes=None)` 新增可选参数：
+  `None`=使用 config['stocks']（原行为），传列表=分析指定股票（自选股
+  模式）。`analyze_stocks(stock_codes)` 原本就支持传入列表，只改入口。
+- 报告文件名沿用既有规则：多只股票 → `每日` 前缀
+  （`每日股票分析报告_20260818_173533.xlsx`），Excel sheet 名
+  `个股{股票名称}_{股票代码}`。
+
+**cron 环境变量陷阱（重要）**：Hermes cron 进程不加载 ~/.bashrc（交互式
+守卫 `case $- in *i*)` 直接 return），`MYSTERY_DB_PATH`/`TDX_HOME` 在
+cron 环境缺失 → WatchlistManager 落到开发库 `data/mystery_cache.db`
+（watchlist 空）→ 分析 0 只。**cron prompt 必须显式
+`export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db
+&& export TDX_HOME=/mnt/new_tdx`** 再执行命令。交互终端不受影响
+（.bashrc 已 export）。
+
+**验证**：生产库自选股 66 只读取正确（样例 sz302132/sh600582/sz300750）；
+3 只冒烟测试（sz300750 宁德时代/sh600582 天地科技/sz000887 中鼎股份）
+全链路通过——Excel/HTML/汇总/仪表板生成，股票名称正确，git 自动提交
+（commit 7ebcd87）并 push 成功（unpushed=0）。
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
@@ -1365,6 +1397,11 @@ Excel 汇总（excel_generator）与 HTML 用 `result.get('所属板块')`，
 
 # 每日分析（config 中 18 只股票，文件名加"每日"前缀）
 /home/ai/ai_runner/venv/bin/python run_analysis.py --mode daily
+
+# 每日分析（自选股模式：读取 watchlist 表全部股票，约66只）
+# 注意：非交互/cron 环境需先 export MYSTERY_DB_PATH 指向生产库，否则自选股为空
+MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db \
+  /home/ai/ai_runner/venv/bin/python run_analysis.py --mode daily --watchlist
 
 # 指定配置文件
 /home/ai/ai_runner/venv/bin/python run_analysis.py --mode daily --config config/config.yaml

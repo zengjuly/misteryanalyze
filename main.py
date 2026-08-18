@@ -850,13 +850,15 @@ class StockAnalysisSystem:
             self.logger.error(f"❌ 合并分析结果异常: {e}")
             raise
     
-    def run_daily_analysis(self):
-        """运行每日分析"""
+    def run_daily_analysis(self, stock_codes: List[str] = None):
+        """运行每日分析
+        :param stock_codes: 股票代码列表，None=使用配置文件中的股票（自选股模式传入自选股代码）
+        """
         try:
             self.logger.info("🌅 开始每日分析...")
             
             # 执行分析
-            results = self.analyze_stocks()
+            results = self.analyze_stocks(stock_codes)
             
             if results:
                 # 输出结果摘要

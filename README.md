@@ -151,6 +151,10 @@ python3 run_analysis.py --test
 - `--mode daily`: 每日分析模式
 - `--mode single`: 单只股票分析模式
 - `--stock`: 指定股票代码
+- `--watchlist`: 每日分析使用自选股列表（替代 config 股票列表；从生产库
+  watchlist 表读取，约66只。**非交互/cron 环境必须先
+  `export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db`**，
+  否则 .bashrc 不加载、自选股读空）
 - `--test`: 运行系统测试
 
 ### 数据中枢与全市场扫描
@@ -556,7 +560,7 @@ streamlit run web/app.py --server.port 1888 --server.headless true
 
 ## 版本信息
 
-- **版本**: 1.16.1
+- **版本**: 1.17.0
 - **作者**: Mystery Team
 - **更新时间**: 2026-08-18
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
