@@ -111,23 +111,48 @@ class ExcelGenerator:
                 column_length = max(len(str(column)), 12)
                 worksheet.column_dimensions[chr(64 + i)].width = column_length
             
+            # 汇总报告股票代码超链接：点击跳转到对应个股sheet的A1
+            if '股票代码' in summary_df.columns and '股票名称' in summary_df.columns:
+                code_col_idx = summary_df.columns.get_loc('股票代码') + 1  # 1-based
+                for row_idx, (_, row) in enumerate(summary_df.iterrows(), start=2):
+                    code = row['股票代码']
+                    name = row['股票名称'] or '未知'
+                    sheet_name = self._make_stock_sheet_name(name, code)
+                    cell = worksheet.cell(row=row_idx, column=code_col_idx)
+                    cell.hyperlink = f"#'{sheet_name}'!A1"
+                    cell.style = "Hyperlink"
+            
             self.logger.info("✅ 汇总工作表创建完成")
             
         except Exception as e:
             self.logger.error(f"❌ 创建汇总工作表异常: {e}")
     
+    @staticmethod
+    def _make_stock_sheet_name(stock_name: str, stock_code: str) -> str:
+        """生成个股 sheet 名（与 _create_detail_sheets 保持一致，合法长度≤31）"""
+        sheet_name = f"个股{stock_name}_{stock_code}"
+        if len(sheet_name) > 31:
+            sheet_name = sheet_name[:31]
+        return sheet_name
+    
+    
     def _create_detail_sheets(self, writer: pd.ExcelWriter, analysis_results: Dict[str, Any], 
                              stock_data: Dict[str, pd.DataFrame]):
-        """创建个股详细分析工作表"""
+        """创建个股详细分析工作表，并在汇总报告和个股sheet之间添加导航超链接"""
         try:
+            # 先收集所有股票 sheet 名称（保持和 analysis_results 相同的顺序）
+            stock_sheet_names = []
             for stock_code, result in analysis_results.items():
                 if isinstance(result, dict) and '综合评分' in result:
-                    # sheet名: 个股名_股票代码（如 中国船舶_sh600150）
                     stock_name = result.get('股票名称', '未知')
-                    sheet_name = f"个股{stock_name}_{stock_code}"
-                    # Excel sheet名最长31字符，超长截断
-                    if len(sheet_name) > 31:
-                        sheet_name = sheet_name[:31]
+                    stock_sheet_names.append(self._make_stock_sheet_name(stock_name, stock_code))
+            
+            stock_index = 0
+            for stock_code, result in analysis_results.items():
+                if isinstance(result, dict) and '综合评分' in result:
+                    # sheet名: 个股名_股票代码（如 个股中航成飞_sz302132）
+                    stock_name = result.get('股票名称', '未知')
+                    sheet_name = stock_sheet_names[stock_index]
                     
                     # 创建详细分析数据
                     detail_data = []
@@ -288,14 +313,36 @@ class ExcelGenerator:
                     # 转换为DataFrame
                     detail_df = pd.DataFrame(detail_data, columns=['项目', '结果', '备注'])
                     
-                    # 写入Excel
-                    detail_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    # 写入Excel（第1行预留给导航超链接）
+                    detail_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                     
                     # 设置列宽
                     worksheet = writer.sheets[sheet_name]
                     worksheet.column_dimensions['A'].width = 20
                     worksheet.column_dimensions['B'].width = 15
                     worksheet.column_dimensions['C'].width = 30
+                    
+                    # 添加导航超链接（第1行：首页 / 前一页 / 后一页）
+                    # 首页 -> 汇总报告 A1
+                    cell_home = worksheet.cell(row=1, column=1, value="首页")
+                    cell_home.hyperlink = "#'汇总报告'!A1"
+                    cell_home.style = "Hyperlink"
+                    
+                    # 前一页
+                    prev_sheet = stock_sheet_names[stock_index - 1] if stock_index > 0 else None
+                    if prev_sheet:
+                        cell_prev = worksheet.cell(row=1, column=2, value="前一页")
+                        cell_prev.hyperlink = f"#'{prev_sheet}'!A1"
+                        cell_prev.style = "Hyperlink"
+                    
+                    # 后一页
+                    next_sheet = stock_sheet_names[stock_index + 1] if stock_index + 1 < len(stock_sheet_names) else None
+                    if next_sheet:
+                        cell_next = worksheet.cell(row=1, column=3, value="后一页")
+                        cell_next.hyperlink = f"#'{next_sheet}'!A1"
+                        cell_next.style = "Hyperlink"
+                    
+                    stock_index += 1
             
             self.logger.info("✅ 个股详细分析工作表创建完成")
             
