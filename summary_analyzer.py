@@ -168,8 +168,8 @@ class SummaryAnalyzer:
                     else:
                         details['评分分布']['40分以下'] += 1
                     
-                    # 行业分布（模拟数据）
-                    industry = result.get('行业', '未知')
+                    # 行业分布（兼容 daily 流程的 '所属板块' 键与旧 '行业' 键）
+                    industry = result.get('所属板块') or result.get('行业') or '未知'
                     if industry in details['行业分布']:
                         details['行业分布'][industry] += 1
                     else:
