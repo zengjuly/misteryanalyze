@@ -86,6 +86,9 @@ def parse_zxg(path: str = None) -> List[str]:
         # 过滤非股票: 88/99/98 开头是概念指数（如 881418），非个股
         if code6.startswith(('88', '99', '98')):
             continue
+        # 过滤基金/ETF: 15/16/18 开头=深市基金(如159742)，5 开头=沪市基金
+        if code6.startswith(('15', '16', '18', '5')):
+            continue
         codes.append(f"{mkt}{code6}")
     return codes
 

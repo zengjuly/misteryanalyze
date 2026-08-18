@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # baostock_client.py - 基于Baostock的股票数据获取模块
+import os
+import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -111,16 +113,43 @@ class BaostockClient:
         获取股票名称
         :param stock_code: 股票代码（支持多种格式）
         :return: 股票名称，获取失败返回股票代码
+        优先读本地 db（stock_industry_info.code_name，毫秒级、网络故障时可靠），
+        未命中才走 baostock 在线查询（带重登重试）。
         """
         try:
             stock_code = self.normalize_stock_code(stock_code)
-            result = bs.query_stock_basic(code=stock_code)
-            if result.error_code == '0':
-                data = result.get_data()
-                if data is not None and not data.empty and 'code_name' in data.columns:
-                    name = str(data.iloc[0]['code_name'])
-                    if name and name != 'nan':
-                        return name
+            # 1) 本地 db 优先（生产库 5208 只真实名称；网络故障时名称仍正确）
+            try:
+                from db_manager import MysteryDB
+                db = MysteryDB()
+                df = db.get_stock_info()  # type=1 status=1 全部A股（毫秒级）
+                hit = df[df['code'] == stock_code]
+                if not hit.empty and hit.iloc[0].get('code_name'):
+                    return str(hit.iloc[0]['code_name'])
+            except Exception:
+                pass  # db 不可用/无此代码 → 在线查询
+            # 2) baostock 在线查询（error_code != '0' 时重登重试一次）
+            for _attempt in range(2):
+                result = bs.query_stock_basic(code=stock_code)
+                if result.error_code == '0':
+                    data = result.get_data()
+                    if data is not None and not data.empty and 'code_name' in data.columns:
+                        name = str(data.iloc[0]['code_name'])
+                        if name and name != 'nan':
+                            return name
+                # 网络/登录类错误 → 重登重建连接后重试一次
+                err = str(result.error_msg)
+                if any(k in err for k in ('接收', '网络', '登录', 'login', 'socket')):
+                    self.logger.warning(
+                        f"⚠️ 获取 {stock_code} 名称失败({err[:40]})，重新登录重试...")
+                    try:
+                        bs.logout()
+                    except Exception:
+                        pass
+                    self.login_success = False
+                    self.login()
+                    continue
+                break
             self.logger.warning(f"⚠️ 获取 {stock_code} 股票名称失败: {result.error_msg}")
         except Exception as e:
             self.logger.warning(f"⚠️ 获取 {stock_code} 股票名称异常: {e}")
@@ -141,6 +170,34 @@ class BaostockClient:
             self.logger.error(f"❌ 获取股票列表异常: {e}")
             return pd.DataFrame()
     
+    def _query_with_login_retry(self, stock_code: str, fields: str,
+                                start_date: str, end_date: str,
+                                frequency: str, adjustflag: str,
+                                retried: bool = False):
+        """查询K线；遇到'用户未登录'自动重登后重试一次
+        baostock 全局单连接会话可能中途失效（网络波动/超时后），
+        此时所有查询返回 error_msg='用户未登录'——必须重登才能恢复。
+        """
+        result = bs.query_history_k_data_plus(
+            stock_code, fields,
+            start_date=start_date, end_date=end_date,
+            frequency=frequency, adjustflag=adjustflag)
+        if (result.error_code != '0' and not retried
+                and any(k in str(result.error_msg).lower()
+                        for k in ('登录', 'login', '未登录'))):
+            self.logger.warning(
+                f"⚠️ {stock_code} 查询提示未登录，重新登录后重试...")
+            try:
+                bs.logout()
+            except Exception:
+                pass
+            self.login_success = False
+            self.login()
+            return self._query_with_login_retry(
+                stock_code, fields, start_date, end_date,
+                frequency, adjustflag, retried=True)
+        return result
+
     def get_daily_data(self, stock_code: str, start_date: str, end_date: str, 
                      adjustflag: str = '3') -> pd.DataFrame:
         """
@@ -154,14 +211,10 @@ class BaostockClient:
         # 标准化股票代码
         stock_code = self.normalize_stock_code(stock_code)
         try:
-            result = bs.query_history_k_data_plus(
-                stock_code, 
+            result = self._query_with_login_retry(
+                stock_code,
                 "date,code,open,high,low,close,volume,amount,turn,tradestatus,pctChg,isST",
-                start_date=start_date, 
-                end_date=end_date,
-                frequency="d",
-                adjustflag=adjustflag
-            )
+                start_date, end_date, "d", adjustflag)
             
             if result.error_code == '0':
                 data = result.get_data()
@@ -209,14 +262,10 @@ class BaostockClient:
         # 标准化股票代码
         stock_code = self.normalize_stock_code(stock_code)
         try:
-            result = bs.query_history_k_data_plus(
+            result = self._query_with_login_retry(
                 stock_code,
                 "date,code,open,high,low,close,volume,amount,turn,pctChg",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="w",
-                adjustflag=adjustflag
-            )
+                start_date, end_date, "w", adjustflag)
             
             if result.error_code == '0':
                 data = result.get_data()
@@ -263,14 +312,10 @@ class BaostockClient:
         # 标准化股票代码
         stock_code = self.normalize_stock_code(stock_code)
         try:
-            result = bs.query_history_k_data_plus(
+            result = self._query_with_login_retry(
                 stock_code,
                 "date,code,open,high,low,close,volume,amount,turn,pctChg",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="m",
-                adjustflag=adjustflag
-            )
+                start_date, end_date, "m", adjustflag)
             
             if result.error_code == '0':
                 data = result.get_data()

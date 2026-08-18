@@ -454,7 +454,10 @@ class MarketDataClient:
             # baostock 全局单socket：加锁串行化（线程安全）
             with BAOSTOCK_LOCK:
                 # 确保已登录（baostock 未登录时查询返回 'you don't login'）
-                if not self._bs_logged_in:
+                # _bs_logged_in 只是"登录过"标志；会话可能中途失效
+                # （网络波动后 baostock_client 内部重登会把 login_success 置回 True，
+                #  但若查询返回未登录而客户端没重登，这里也要兜底重登）
+                if not self._bs_logged_in or not self.bs_client.login_success:
                     self._bs_logged_in = self.bs_client.login()
                 if period == "daily":
                     return self.bs_client.get_daily_data(code, start_date, end_date,
