@@ -356,7 +356,49 @@ class BaostockClient:
             self._relogin_if_network_error(e)  # 网络错误自愈
             return pd.DataFrame()
     
-    def get_financial_data(self, stock_code: str, current_price: float = None) -> Dict:
+    def _financial_query_with_login_retry(self, query_fn, desc: str,
+                                          retried: bool = False):
+        """执行财务类查询；遇未登录/网络类错误自动重登后重试一次。
+        与 _query_with_login_retry 同模式——baostock 全局单连接会话可能中途
+        失效（网络波动后），此时所有查询返回 error_msg 含 '用户未登录' 或
+        '接收数据异常'（2026-08-19 真实 bug：会话失效时 64 只自选股财务
+        数据全部静默失败，报表 ROE/EPS/PE/PB/股息率全 None）。
+        :param query_fn: 无参可调用（已绑定 code/year/quarter 等参数）
+        :param desc: 日志描述（如 "sh.600150盈利(2026Q1)"）
+        :param retried: 是否已重试过一次
+        """
+        try:
+            result = query_fn()
+            err = str(getattr(result, 'error_msg', ''))
+            if (getattr(result, 'error_code', '') != '0' and not retried
+                    and any(k in err for k in ('登录', 'login', '未登录', '接收', '网络'))):
+                self.logger.warning(
+                    f"⚠️ {desc} 查询失败({err[:40]})，重新登录重试...")
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+                self.login_success = False
+                self.login()
+                return self._financial_query_with_login_retry(
+                    query_fn, desc, retried=True)
+            return result
+        except Exception as e:
+            if (not retried
+                    and any(k in str(e) for k in ('登录', 'login', '未登录', '接收', '网络', 'socket', 'Bad file'))):
+                self.logger.warning(
+                    f"⚠️ {desc} 查询异常({e})，重新登录重试...")
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+                self.login_success = False
+                self.login()
+                return self._financial_query_with_login_retry(
+                    query_fn, desc, retried=True)
+            raise
+
+    def get_financial_data(self, stock_code: str, current_price: float = None) -> dict:
         """
         获取财务数据（ROE/EPS/PE/PB/股息率）
         :param stock_code: 股票代码
@@ -377,7 +419,10 @@ class BaostockClient:
             profit_stat = None  # 报告期（用于ROE年化判断）
             for year, quarter in [(2026, 1), (2025, 4), (2025, 3)]:
                 try:
-                    profit_data = bs.query_profit_data(code=stock_code, year=year, quarter=quarter)
+                    profit_data = self._financial_query_with_login_retry(
+                        lambda y=year, q=quarter: bs.query_profit_data(
+                            code=stock_code, year=y, quarter=q),
+                        f"{stock_code}盈利({year}Q{quarter})")
                     if profit_data.error_code == '0':
                         tmp_df = profit_data.get_data()
                         if not tmp_df.empty:
@@ -424,9 +469,10 @@ class BaostockClient:
             if current_price and current_price > 0:
                 if financial_data['EPS']:
                     financial_data['PE'] = round(current_price / financial_data['EPS'], 2)
-                if financial_data['ROE_年化'] and financial_data['EPS']:
+                if financial_data.get('ROE_年化') and financial_data['EPS']:
                     # PB = 股价 / 每股净资产；每股净资产 = EPS_TTM / ROE年化
-                    bps = financial_data['EPS'] / financial_data['ROE_年化'] if financial_data['ROE_年化'] > 0 else None
+                    roe_ann = financial_data.get('ROE_年化')
+                    bps = financial_data['EPS'] / roe_ann if roe_ann and roe_ann > 0 else None
                     if bps:
                         financial_data['PB'] = round(current_price / bps, 2)
                 if financial_data['每股股息']:

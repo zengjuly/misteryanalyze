@@ -560,9 +560,9 @@ streamlit run web/app.py --server.port 1888 --server.headless true
 
 ## 版本信息
 
-- **版本**: 1.18.0
+- **版本**: 1.18.1
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-18
+- **更新时间**: 2026-08-19
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 首次部署 Checklist

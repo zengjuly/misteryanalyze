@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.18.0
+- **版本**: 1.18.1
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-18
+- **更新日期**: 2026-08-19
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1440,6 +1440,53 @@ cron 环境缺失 → WatchlistManager 落到开发库 `data/mystery_cache.db`
 （`#'个股中航成飞_sz302132'!A1` 等）；个股 sheet 首页/前一页/后一页
 全部正确（首只无前一页、末只无后一页）；数据从第2行开始；
 单测 58/58 OK。
+
+### 4.20 财务查询会话失效自愈 + ROE_年化 键缺失修复（v1.18.1，2026-08-19）
+
+**需求来源**：2026-08-19 每日分析（自选股 64 只）完成后检查发现——
+`❌ 获取 sh.600150 财务数据异常: 'ROE_年化'` **64/64 只全部失败**，
+报表 ROE/EPS/PE/PB/股息率 全部为 None（用户硬性要求：报告必须真实数据）。
+
+**根因（双 bug 叠加）**：
+1. **财务查询无会话失效保护（主因）**：baostock 全局单连接会话中途失效后
+   （网络波动/TCP 卡死，当日 TDX 行情服务器 114.94.20.42:10030 连接重传 24 次后
+   才超时降级），`bs.query_profit_data` 全部返回 error_code≠0 或抛异常。
+   K线 getters 有 `_query_with_login_retry`（08-18 修复），但
+   `get_financial_data` 直接裸调 `bs.query_profit_data`/`bs.query_dividend_data`，
+   probe 循环 `except Exception: continue` 把失败全吞掉 → profit_df 恒空 →
+   ROE 恒 None → 财务全 None（**且无任何显式报错，只有下游 KeyError 暴露**）。
+2. **`financial_data['ROE_年化']` KeyError（次因）**：`'ROE_年化'` 只在
+   `if financial_data['ROE']:` 分支内（行 405 附近）设置；ROE 为 None/0
+   （亏损/数据缺失/会话失效）时键不存在，行 427
+   `if financial_data['ROE_年化'] and ...` 直接 `KeyError: 'ROE_年化'` →
+   整个财务函数被 except 兜住返回全 None。**这是独立于会话问题的潜在 bug**：
+   任何 ROE 缺失的股票都会触发。
+
+**实现**（data/baostock_client.py）：
+1. 新增 `_financial_query_with_login_retry(query_fn, desc, retried=False)`：
+   与 `_query_with_login_retry` 同模式——查询后检测 `error_code != '0'` 且
+   error_msg 含 `登录/login/未登录/接收/网络`（或异常串含
+   `登录/login/未登录/接收/网络/socket/Bad file`）→ `bs.logout()` +
+   `self.login()` + 重试一次（retried=True 后不再重试，异常则 re-raise
+   由调用方 except 兜底）。
+2. probe 循环改用 `self._financial_query_with_login_retry(lambda y=..., q=...: ...)`
+   （lambda 用默认参数绑定 year/quarter 防闭包陷阱）；分红查询同样套用。
+3. 行 427 改为 `financial_data.get('ROE_年化')`（`roe_ann and roe_ann > 0`
+   再计算 bps），ROE 缺失不再 KeyError。
+
+**验证**（tests/test_financial_retry.py 6 项，无网络 mock）：
+- 会话失效（error_msg='用户未登录'）→ logout×1 + login×1 → 重试成功，
+  财务完整（ROE 0.032989 / Q1 年化×4 / PE / PB / 股息率 1.88%）
+- error_msg='接收数据异常'（网络类）同样触发重登
+- profit 全空 → ROE=None，**不抛 KeyError**，PE/PB None、股息率仍正常
+- roeAvg='0' → ROE=0.0 → 不抛 KeyError，PB None
+- 正常链路财务完整、无需重登
+- 重试一次仍失败 → 返回全 None 字典不抛异常（3 季度各重登一次）
+单测 64/64 OK；全量 64 只重跑后报告财务列全部有值。
+
+**排查模式**：报表财务列全 None + 日志 `❌ 获取 xxx 财务数据异常: 'ROE_年化'`
+刷屏 = 会话失效 + 键缺失双 bug，先 `grep ROE_年化 baostock_client.py` 看
+键写入/读取位置，再查日志 login 上下文判断会话是否中途死掉。
 
 ## 5. 接口设计
 
