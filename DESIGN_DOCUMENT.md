@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.18.1
+- **版本**: 1.18.2
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-19
+- **更新日期**: 2026-08-20
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1487,6 +1487,50 @@ cron 环境缺失 → WatchlistManager 落到开发库 `data/mystery_cache.db`
 **排查模式**：报表财务列全 None + 日志 `❌ 获取 xxx 财务数据异常: 'ROE_年化'`
 刷屏 = 会话失效 + 键缺失双 bug，先 `grep ROE_年化 baostock_client.py` 看
 键写入/读取位置，再查日志 login 上下文判断会话是否中途死掉。
+
+### 4.21 切片索引重置 + 增量合并新鲜度回退（v1.18.2，2026-08-20）
+
+**需求来源**：2026-08-20 每日分析（自选股 64 只）运行中日志刷屏
+`❌ 计算均线排列状态异常: 0`（及趋势强度/换手率指标/价格动能/量价关系 4 组同类错误，
+每只股票 5 条）——5 组指标全部静默缺失，且当日报告数据停在昨日收盘。
+
+**根因（双 bug，均在 data/market_data_client.py）**：
+1. **`_slice` 布尔掩码切片保留原索引（主因）**：`_fetch_with_incremental` 返回
+   `_slice(cached_cn, ...)`（delta 空分支）或 `_slice(merged, ...)`（delta 非空分支）。
+   `df[df['日期'] >= start]` 这类布尔掩码**不重置索引**——缓存 1333 行、请求 1000 天
+   窗口时切片结果索引从 670 开始。下游指标函数按
+   `for i in range(len(df)): df.loc[i, col]` 迭代（indicators/ 下
+   calculate_ma_arrangement / calculate_trend_strength / calculate_turnover_rate /
+   calculate_price_momentum / calculate_volume_price_relation 共 5 个函数都是这个模式），
+   `df.loc[0]` 在非 0 起点 RangeIndex 上抛 `KeyError: '0'` → 异常被函数内部 except
+   吞掉并返回原数据 → **列不存在，报告该指标取默认值（0/❌），无任何显式报错**。
+   排查信号：日志 `❌ 计算XXX异常: 0`（异常 str 就是 '0'）+ 报告这些指标全为默认值。
+2. **增量合并结果无新鲜度检查（次因，数据滞后）**：`_cache_stale` 只在 delta **空**
+   分支检查；delta 非空时合并结果直接返回，不校验是否覆盖最近应有交易日。
+   当日 .day 文件停在昨日（08-19）、缓存停在 08-18 时，合并结果 08-19 被当作
+   当日行情输出（"每日分析"用昨日收盘冒充当日数据）。
+
+**实现**：
+1. `_slice` 末尾加 `return df.reset_index(drop=True)`——切片后统一重置为
+   0 起点 RangeIndex（增量两条分支共用，一处修复全部覆盖）。
+2. `_fetch_with_incremental` delta 非空分支、`_slice` 前加
+   `if self._cache_stale(merged): return None`——合并结果仍落后于最近应有交易日
+   （周末=上周五、工作日=当天）时回退在线源（`_fetch_with_fallback` 已有 tdx_local
+   新鲜度检查，会跳过本地源直取 akshare/baostock 当日行情）。
+
+**验证**（tests/test_slice_index.py 5 项，零网络 mock）：
+- `_slice` 中间段切片 → 索引从 0 开始、末索引 = len-1（原 bug 从 670 开始）
+- `_slice` 无过滤 → 索引 0..N-1
+- delta 空 + 缓存覆盖最近交易日 → 返回切片缓存且索引 0 起点
+- delta 非空 + 合并仍落后（缓存停 3 天前、增量只补到 2 天前）→ 返回 None、
+  `_fetch_with_fallback` 被调用（在线回退）
+- delta 非空 + 合并已最新 → 返回合并数据、索引 0 起点、不回退
+全量套件 69/69 OK。修复后真实数据验证：sh600150 指标列
+（均线排列/趋势强度/换手率_MA5/价格动能/量价关系）全部生成，无 `异常: 0` 刷屏。
+
+**排查模式**：日志 `❌ 计算均线排列状态异常: 0` 刷屏（每只 5 条）→ 先查
+`fetch_daily` 返回帧的 `df.index[0]` 是否非 0；`_slice` 有 reset_index 后仍有问题
+再查是否新数据路径（tdx_local 直读/在线源）返回了非标准索引。
 
 ## 5. 接口设计
 

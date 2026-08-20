@@ -266,6 +266,15 @@ class MarketDataClient:
                 merged['换手率'] = merged['换手率'].ffill()
             logger.info(f"⚡ [{code}] 增量更新: 缓存{len(cached_cn)}条 + 增量{len(delta)}条"
                         f" → 合并{len(merged)}条（last_date={last_date}）")
+            # 合并结果新鲜度检查: .day 增量文件可能仍落后于最近应有交易日
+            # （当日盘后未更新通达信数据包时，增量只到昨日收盘）→ 回退在线源
+            # 拉最新，避免"每日分析"用昨日收盘冒充当日数据。
+            # （2026-08-20 真实数据路径漏洞: .day 停 08-19、缓存 08-18，
+            #   合并后 08-19 被当作当日行情输出）
+            if self._cache_stale(merged):
+                logger.info(f"⚠️ [{code}] 增量合并后仍落后于最近交易日"
+                            f"(最新{merged['日期'].max()})，回退在线源拉最新")
+                return None
             return self._slice(merged, start_date, end_date)
         except Exception as e:
             logger.warning(f"⚠️ [{code}] 增量更新异常({str(e)[:100]})，回退在线源")
@@ -320,12 +329,18 @@ class MarketDataClient:
 
     @staticmethod
     def _slice(df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
-        """按日期范围切片（增量返回需与请求范围一致）"""
+        """按日期范围切片（增量返回需与请求范围一致）
+
+        注意: 布尔掩码切片会保留原索引（如缓存 1333 行切片后索引从 670 开始），
+        下游指标函数按 ``range(len(df))`` + ``df.loc[i]`` 迭代 → KeyError('0')
+        （2026-08-20 真实 bug: 日志刷 ``❌ 计算均线排列状态异常: 0``）。
+        必须重置为 0 起点 RangeIndex。
+        """
         if start_date:
             df = df[df['日期'] >= str(start_date)]
         if end_date:
             df = df[df['日期'] <= str(end_date)]
-        return df
+        return df.reset_index(drop=True)
 
     # ============ 主备退避核心 ============
     def _fetch_with_fallback(self, code: str, period: str,
