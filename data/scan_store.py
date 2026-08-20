@@ -338,7 +338,25 @@ class ScanStore:
     # ---------- 缓存 ----------
     @staticmethod
     def get_market_trade_date() -> str:
-        """主库最新交易日（缓存键）—— 行情不更新时该值不变"""
+        """真实最新交易日（缓存键）—— 在线交易日历优先，主库回退
+
+        2026-08-20 修复: 原实现直接取主库 stock_kline_data MAX(date)，
+        主库缓存未更新（如 tdx 本地停在昨日）时永远返回旧日期 →
+        缓存误判"行情未更新"→ 复用旧扫描结果，不拉最新行情。
+        现改为 trade_calendar.get_latest_trade_date()：在线交易日历
+        （akshare，TTL 缓存）确认真实最新交易日，在线失败才回退主库。
+        """
+        try:
+            try:
+                from data.trade_calendar import get_latest_trade_date
+            except ImportError:
+                from trade_calendar import get_latest_trade_date
+            latest = get_latest_trade_date()
+            if latest:
+                return latest
+        except Exception as e:
+            logger.warning(f"⚠️ 在线最新交易日获取失败({e})，回退主库")
+        # 回退: 主库 MAX(date)（原行为）
         try:
             from data.db_manager import MysteryDB, DEFAULT_DB_PATH
             db = MysteryDB()

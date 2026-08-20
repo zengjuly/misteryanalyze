@@ -103,17 +103,17 @@ class DataFeeder:
         for name, code in codes.items():
             df = None
             db_code = code if '.' in code else code
-            # 1. db 缓存（最新日期 3 天内直接复用，避免每次分析走在线源卡顿）
+            # 1. db 缓存（真实最新交易日判断：缓存已含最新交易日 → 直接复用，
+            #    落后 → 走在线源拉最新，避免用昨日指数冒充当日）
             try:
-                from datetime import datetime, timedelta
+                from trade_calendar import get_latest_trade_date
                 from db_manager import MysteryDB
                 db = MysteryDB()
                 cached = db.load_kline(db_code, 'daily')
                 if cached is not None and not cached.empty:
                     last = str(cached['date'].max())[:10]
-                    age = (datetime.now()
-                           - datetime.strptime(last, '%Y-%m-%d')).days
-                    if age <= 3:
+                    latest = get_latest_trade_date()
+                    if latest and last >= latest:
                         m = {'date': '日期', 'open': '开盘价', 'high': '最高价',
                              'low': '最低价', 'close': '收盘价',
                              'volume': '成交量', 'amount': '成交额',

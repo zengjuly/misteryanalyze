@@ -183,18 +183,32 @@ class MarketDataClient:
 
     @staticmethod
     def _cache_stale(cached_cn: pd.DataFrame) -> bool:
-        """缓存最后日期是否落后于最近应有交易日（工作日，排除周末）
+        """缓存最后日期是否落后于真实最新交易日
         :param cached_cn: 中文列缓存 DataFrame
         :return: True=落后应回退在线源；False=缓存已最新
+
+        2026-08-20 增强: 原实现以"最近工作日（排除周末）"为期望日期，
+        节假日会误判（节假日当天缓存天然停在上一交易日却被判落后）。
+        现优先用在线交易日历（trade_calendar.get_latest_trade_date）确认
+        真实最新交易日；在线失败回退工作日近似。
         """
-        from datetime import datetime, timedelta
         if cached_cn is None or cached_cn.empty or '日期' not in cached_cn.columns:
             return False
         try:
             last = pd.to_datetime(cached_cn['日期']).max().date()
         except Exception:
             return False
-        # 最近应有交易日: 从今天往前找第一个工作日（周末=上周五）
+        # 真实最新交易日（在线交易日历优先，失败回退工作日近似）
+        try:
+            from trade_calendar import get_latest_trade_date
+            expect_str = get_latest_trade_date()
+            if expect_str:
+                expect = pd.to_datetime(expect_str).date()
+                return last < expect
+        except Exception:
+            pass
+        # 回退: 最近应有交易日 = 从今天往前找第一个工作日（周末=上周五）
+        from datetime import datetime, timedelta
         today = datetime.now().date()
         expect = today
         while expect.weekday() >= 5:  # 周六(5)/周日(6) → 回退到周五
