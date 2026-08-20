@@ -7,6 +7,7 @@ import logging
 from typing import Dict, List, Optional, Any
 import os
 import sys
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 sys_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if sys_path not in sys.path:
@@ -119,7 +120,8 @@ class ExcelGenerator:
                     name = row['股票名称'] or '未知'
                     sheet_name = self._make_stock_sheet_name(name, code)
                     cell = worksheet.cell(row=row_idx, column=code_col_idx)
-                    cell.hyperlink = f"#'{sheet_name}'!A1"
+                    # 使用 location 属性（内部引用），避免 Excel 自动补全文件路径
+                    cell.hyperlink = Hyperlink(ref=cell.coordinate, location=f"'{sheet_name}'!A1")
                     cell.style = "Hyperlink"
             
             self.logger.info("✅ 汇总工作表创建完成")
@@ -323,23 +325,23 @@ class ExcelGenerator:
                     worksheet.column_dimensions['C'].width = 30
                     
                     # 添加导航超链接（第1行：首页 / 前一页 / 后一页）
-                    # 首页 -> 汇总报告 A1
+                    # 首页 -> 汇总报告 A1（使用 location 属性，避免文件路径）
                     cell_home = worksheet.cell(row=1, column=1, value="首页")
-                    cell_home.hyperlink = "#'汇总报告'!A1"
+                    cell_home.hyperlink = Hyperlink(ref=cell_home.coordinate, location="'汇总报告'!A1")
                     cell_home.style = "Hyperlink"
                     
                     # 前一页
                     prev_sheet = stock_sheet_names[stock_index - 1] if stock_index > 0 else None
                     if prev_sheet:
                         cell_prev = worksheet.cell(row=1, column=2, value="前一页")
-                        cell_prev.hyperlink = f"#'{prev_sheet}'!A1"
+                        cell_prev.hyperlink = Hyperlink(ref=cell_prev.coordinate, location=f"'{prev_sheet}'!A1")
                         cell_prev.style = "Hyperlink"
                     
                     # 后一页
                     next_sheet = stock_sheet_names[stock_index + 1] if stock_index + 1 < len(stock_sheet_names) else None
                     if next_sheet:
                         cell_next = worksheet.cell(row=1, column=3, value="后一页")
-                        cell_next.hyperlink = f"#'{next_sheet}'!A1"
+                        cell_next.hyperlink = Hyperlink(ref=cell_next.coordinate, location=f"'{next_sheet}'!A1")
                         cell_next.style = "Hyperlink"
                     
                     stock_index += 1
