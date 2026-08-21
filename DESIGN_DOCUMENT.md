@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.20.0
+- **版本**: 1.21.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-21
+- **更新日期**: 2026-08-22
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1635,6 +1635,38 @@ MARKETDB_DB_PATH 优先）
 
 **实测**：ths_official + MarketDB 本地 316ms/149 条（原 subprocess 596ms）；
 单股分析回归 EXIT=0；单测 69/69
+
+### 4.25 板块行情真实指数化（docs/082202.md，v1.21.0，2026-08-22）
+
+**目标**：板块监控/共振评分从"个股抽样逆向聚合"升级为**真实板块指数**
+（同花顺扶摇官方指数 K 线），杜绝样本失真；Token 极简输出。
+
+**阶段一：数据层（sector_kline/sector_meta 标准存储）**
+- db_manager 新增两表：`sector_kline`（sector_code/sector_name/trade_date/
+  OHLC/volume/amount/source_type，复合索引 idx_sector_kline_date +
+  idx_sector_kline_code_date）与 `sector_meta`（元数据 + last_sync_date 增量断点）
+- db_manager 方法：get_sector_kline / save_sector_kline（幂等 REPLACE）/
+  get_sector_meta / upsert_sector_meta / update_sector_sync_date
+- **data/sync_sector_data.py（新建）**：index-catalog（全量板块目录）→
+  fetch_index_hist（直连 index-historical 真实指数 K 线）→ 落库 + 断点续传；
+  --limit/--days/--force 参数；输出 Token 极简信封
+- ths_client 新增 fetch_index_hist（直连板块指数，避免每板块重复 catalog）
+
+**阶段二：分析层（真实指数行业趋势分）**
+- resonance_analyzer 新增 `calculate_industry_score_from_sector(sector_code)`
+  （满分 25：MA20偏离×0.4(10) + 近10日涨幅×0.3(7.5) + 成交额放大×0.3(7.5)；
+  数据<20 根 → 12.5 中位基准分）——真实板块指数计算，非个股抽样
+
+**阶段三：Token 极简优化**
+- run_market_scan 完成时输出摘要信封：`[Mystery Scan Task Completed]`
+  交易日期/扫描数/耗时/真三振池/强势板块 Top3（sector_map）/落盘路径
+- CLI 尾部只打印扫描摘要键（扫描数/信号/报告路径等），**不打印 results 全量**
+
+**实测**：3 板块真实指数同步 6s（新能源 13.37/25 分）；3 只扫描信封输出
+（强势板块 Top3：种业 33.8/粮食概念 32.6/水产品 29.8）；单测 69/69
+
+**后续**：三振 industry_trend 可挂载 sector_kline（calculate_industry_score_
+from_sector 已就绪）；板块监控页可直连真实指数
 
 ## 5. 接口设计
 

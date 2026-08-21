@@ -113,6 +113,33 @@ class MysteryDB:
                     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (stock_code, period, last_trade_date)
                 );
+
+                -- 5. 行业板块指数行情表（docs/082202.md 真实指数，非个股抽样）
+                CREATE TABLE IF NOT EXISTS sector_kline (
+                    sector_code TEXT NOT NULL,      -- ths_881155 / tdx_880301
+                    sector_name TEXT NOT NULL,      -- 板块名称（半导体）
+                    trade_date  TEXT NOT NULL,      -- YYYY-MM-DD
+                    open REAL NOT NULL, high REAL NOT NULL,
+                    low REAL NOT NULL, close REAL NOT NULL,
+                    volume INTEGER NOT NULL, amount REAL NOT NULL,
+                    source_type TEXT DEFAULT 'ths', -- ths(扶摇) / tdx(通达信)
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (sector_code, trade_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sector_kline_date
+                    ON sector_kline (trade_date, sector_code);
+                CREATE INDEX IF NOT EXISTS idx_sector_kline_code_date
+                    ON sector_kline (sector_code, trade_date DESC);
+
+                -- 6. 板块元数据表（sector_meta: 分类/成分状态/增量断点）
+                CREATE TABLE IF NOT EXISTS sector_meta (
+                    sector_code TEXT PRIMARY KEY,
+                    sector_name TEXT NOT NULL,
+                    parent_type TEXT,               -- 行业/概念/申万一级
+                    base_code TEXT,                 -- 官方原始代码 881155
+                    is_active INTEGER DEFAULT 1,
+                    last_sync_date TEXT             -- 增量同步断点 YYYY-MM-DD
+                );
                 """)
                 conn.commit()
                 logger.debug(f"✅ 数据库初始化完成: {self.db_path}")
@@ -182,6 +209,101 @@ class MysteryDB:
                     rows)
                 conn.commit()
                 return len(rows)
+            finally:
+                conn.close()
+
+    # ============ 行业板块指数（docs/082202.md 真实指数） ============
+    def get_sector_kline(self, sector_code: str,
+                         start_date: str = None,
+                         end_date: str = None) -> pd.DataFrame:
+        """读取板块指数K线（sector_kline，真实指数非个股抽样）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                sql = ("SELECT trade_date, open, high, low, close, "
+                       "volume, amount FROM sector_kline "
+                       "WHERE sector_code=?")
+                params = [sector_code]
+                if start_date:
+                    sql += " AND trade_date>=?"
+                    params.append(start_date)
+                if end_date:
+                    sql += " AND trade_date<=?"
+                    params.append(end_date)
+                sql += " ORDER BY trade_date"
+                df = pd.read_sql_query(sql, conn, params=params)
+                if df.empty:
+                    return df
+                df = df.rename(columns={'trade_date': '日期'})
+                df['日期'] = pd.to_datetime(df['日期'])
+                return df
+            finally:
+                conn.close()
+
+    def save_sector_kline(self, sector_code: str, sector_name: str,
+                          df: pd.DataFrame, source_type: str = 'ths') -> int:
+        """批量写入板块指数K线（INSERT OR REPLACE，幂等）"""
+        if df is None or df.empty:
+            return 0
+        rows = []
+        for _, r in df.iterrows():
+            rows.append((sector_code, sector_name,
+                         pd.to_datetime(r['日期']).strftime('%Y-%m-%d'),
+                         float(r.get('开盘价', 0)), float(r.get('最高价', 0)),
+                         float(r.get('最低价', 0)), float(r.get('收盘价', 0)),
+                         int(r.get('成交量', 0) or 0),
+                         float(r.get('成交额', 0) or 0), source_type))
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(
+                    """INSERT OR REPLACE INTO sector_kline
+                       (sector_code, sector_name, trade_date, open, high,
+                        low, close, volume, amount, source_type)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""", rows)
+                conn.commit()
+                return len(rows)
+            finally:
+                conn.close()
+
+    def get_sector_meta(self, active_only: bool = True) -> list:
+        """读取板块元数据（sector_meta）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                sql = "SELECT sector_code, sector_name, last_sync_date FROM sector_meta"
+                if active_only:
+                    sql += " WHERE is_active=1"
+                return conn.execute(sql).fetchall()
+            finally:
+                conn.close()
+
+    def upsert_sector_meta(self, code: str, name: str,
+                           parent_type: str = None,
+                           base_code: str = None) -> None:
+        """写入/更新板块元数据"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO sector_meta
+                       (sector_code, sector_name, parent_type, base_code)
+                       VALUES (?,?,?,?)""",
+                    (code, name, parent_type, base_code))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def update_sector_sync_date(self, sector_code: str,
+                                last_date: str) -> None:
+        """更新板块增量同步断点"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE sector_meta SET last_sync_date=? "
+                    "WHERE sector_code=?", (last_date, sector_code))
+                conn.commit()
             finally:
                 conn.close()
 

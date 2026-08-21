@@ -547,6 +547,23 @@ def run_market_scan(limit: int = None, period: str = 'daily',
     # 同步到 output git 仓库（Excel/CSV/TXT 一并推送远端）
     _sync_scan_reports_to_git(output_dir, xlsx_path, csv_path, txt_path)
 
+    # Token 极简摘要信封（docs/082202.md 阶段三：大结果落盘，仅输出聚合摘要）
+    top3 = ''
+    try:
+        if sector_map:
+            top = sorted(sector_map.items(), key=lambda kv: kv[1],
+                         reverse=True)[:3]
+            top3 = '，'.join(f"{name}({round(score,1)})" for name, score in top)
+    except Exception:
+        pass
+    print('[Mystery Scan Task Completed]')
+    print(f"- 交易日期: {_latest_trade_date()} | 扫描周期: {period}")
+    print(f"- 扫描全量个股数: {len(results)} 只 | 耗时: {elapsed:.1f}s")
+    print(f"- 真三振（三级共振）股票池: {summary['真三振数']} 只")
+    if top3:
+        print(f"- 强势板块 Top 3: {top3}")
+    print(f"- 详细数据已落盘至: {xlsx_path}")
+
     logger.info(f"✅ 扫描完成! 耗时{elapsed:.1f}秒")
     logger.info(f"📦 数据库: {stats}")
     return {
@@ -562,7 +579,25 @@ def run_market_scan(limit: int = None, period: str = 'daily',
         'job_id': job_id,
         'results': results,
         'stats': stats,
+        **summary,
     }
+
+
+def _latest_trade_date() -> str:
+    """最近交易日（sector_kline 最新日期或今天）"""
+    try:
+        from data.db_manager import MysteryDB
+        conn = MysteryDB()._connect()
+        try:
+            r = conn.execute(
+                "SELECT MAX(trade_date) FROM sector_kline").fetchone()
+            if r and r[0]:
+                return r[0]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return datetime.now().strftime('%Y-%m-%d')
 
 
 def run_market_scan_background(limit: int = None, period: str = 'daily',
@@ -636,4 +671,11 @@ if __name__ == '__main__':
                              codes=args.codes,
                              scope_name=args.scope,
                              latest=args.latest)
-    print(f"\n📊 扫描结果: {result}")
+    # Token 极简输出（docs/082202.md 阶段三：不打印 results 全量）
+    if isinstance(result, dict):
+        keys = ['扫描数', '含信号', 'VAP-ATR突破', '真三振数',
+                '报告', '明细', 'Excel', '耗时']
+        print("📊 扫描摘要: " + " | ".join(
+            f"{k}={result.get(k)}" for k in keys if k in result))
+    else:
+        print(f"📊 扫描结果: {result}")

@@ -227,6 +227,36 @@ class ThsOfficialClient:
         return block_map
 
     # ============ 4. 板块历史行情 ============
+    def fetch_index_hist(self, index_code: str, days: int = 1100,
+                         start_date: str = None,
+                         end_date: str = None) -> pd.DataFrame:
+        """板块指数K线（直连 index-historical，docs/082202.md 真实指数）"""
+        if end_date is None:
+            end = datetime.now()
+        else:
+            end = pd.to_datetime(end_date)
+        start = (end - timedelta(days=days)) if start_date is None \
+            else pd.to_datetime(start_date)
+        raw = self._run_fuyao([
+            'index-historical', '--thscode', index_code,
+            '--start-ms', str(int(start.timestamp() * 1000)),
+            '--end-ms', str(int(end.timestamp() * 1000))])
+        if not raw:
+            return pd.DataFrame()
+        df = pd.DataFrame(raw)
+        if df.empty or 'date_ms' not in df.columns:
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out['日期'] = pd.to_datetime(df['date_ms'], unit='ms')
+        out['开盘价'] = df.get('open_price', 0).astype(float)
+        out['最高价'] = df.get('high_price', 0).astype(float)
+        out['最低价'] = df.get('low_price', 0).astype(float)
+        out['收盘价'] = df.get('close_price', 0).astype(float)
+        out['成交量'] = df.get('volume', 0).astype(float)
+        out['成交额'] = df.get('turnover', 0).astype(float)
+        out['换手率'] = None
+        return out.sort_values('日期').reset_index(drop=True)
+
     def fetch_block_daily(self, block_name: str, days: int = 1100,
                           start_date: str = None,
                           end_date: str = None) -> pd.DataFrame:

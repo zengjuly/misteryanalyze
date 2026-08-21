@@ -171,7 +171,66 @@ class ResonanceAnalyzer:
         except Exception as e:
             self.logger.error(f"❌ 分析行业趋势异常: {e}")
             return {**empty_result, '详情': [f"分析异常: {e}"]}
-    
+
+    def calculate_industry_score_from_sector(
+            self, sector_code: str, db_path: str = None,
+            marketdb_df: pd.DataFrame = None) -> float:
+        """真实板块指数行业趋势分（docs/082202.md 阶段二，满分25）
+        基于 sector_kline 真实指数（非个股抽样）：
+          MA20偏离×0.4(10分) + 近10日涨幅×0.3(7.5分) + 成交额放大×0.3(7.5分)
+        :param sector_code: 板块代码（ths_881155）
+        :param db_path: SQLite 路径（默认 db_manager 生产库）
+        :param marketdb_df: 可选已读的板块K线（避免重复查询）
+        :return: 0~25 分；数据不足20根返回 12.5 中位基准分
+        """
+        try:
+            df = marketdb_df
+            if df is None:
+                if db_path is None:
+                    from data.db_manager import MysteryDB
+                    db_path = MysteryDB().db_path
+                import sqlite3
+                conn = sqlite3.connect(db_path)
+                try:
+                    rows = conn.execute(
+                        "SELECT close, amount FROM sector_kline "
+                        "WHERE sector_code=? ORDER BY trade_date DESC LIMIT 60",
+                        (sector_code,)).fetchall()
+                finally:
+                    conn.close()
+                if len(rows) < 20:
+                    return 12.5
+                closes = [r[0] for r in rows][::-1]
+                amounts = [r[1] for r in rows][::-1]
+            else:
+                closes = df['收盘价'].astype(float).tolist()[-60:]
+                amounts = df['成交额'].astype(float).tolist()[-60:] \
+                    if '成交额' in df.columns else [0.0] * len(closes)
+                if len(closes) < 20:
+                    return 12.5
+
+            import numpy as np
+            closes = np.array(closes, dtype=float)
+            amounts = np.array(amounts, dtype=float)
+            cur = closes[-1]
+            ma20 = closes[-20:].mean()
+            # A: MA20 偏离（Max 10）
+            bias = (cur - ma20) / ma20 if ma20 > 0 else 0
+            bias_score = min(10.0, max(0.0, bias * 100 + 5.0))
+            # B: 近10日涨幅（Max 7.5）
+            ret10 = (closes[-1] - closes[-10]) / closes[-10] \
+                if closes[-10] > 0 else 0
+            ret_score = min(7.5, max(0.0, ret10 * 100 + 3.75))
+            # C: 成交额放大（Max 7.5）
+            recent_amt = amounts[-5:].mean()
+            hist_amt = amounts[-20:].mean()
+            ratio = recent_amt / (hist_amt + 1e-6)
+            vol_score = min(7.5, max(0.0, ratio * 3.75))
+            return float(round(bias_score + ret_score + vol_score, 2))
+        except Exception as e:
+            self.logger.error(f"❌ 行业指数趋势分异常({sector_code}): {e}")
+            return 12.5
+
     def analyze_capital_flow(self, stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
         """资金活跃度判断（docs/3z.md，区分真三振的关键）
         量比(≥1.8→+12, ≥1.5→+8) + 成交额(≥1.6→+5) + 换手率(≥3%→+3)，满分20
