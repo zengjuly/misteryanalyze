@@ -72,6 +72,7 @@ class BaostockClient:
             lg = bs.login()
             if lg.error_code == '0':
                 self.login_success = True
+                self._apply_socket_timeout()
                 self.logger.info("✅ Baostock登录成功")
                 return True
             else:
@@ -80,6 +81,25 @@ class BaostockClient:
         except Exception as e:
             self.logger.error(f"❌ Baostock登录异常: {e}")
             return False
+
+    def _apply_socket_timeout(self, timeout: float = 30.0):
+        """给 baostock 全局 socket 设置接收超时（v1.18.4，2026-08-21 真实 bug 修复）。
+
+        baostock `send_msg` 的 recv(8192) 无超时——服务器静默断连时
+        （TCP 仍 ESTAB、Send-Q 堆积、无响应）recv 无限阻塞，主流程永久挂起
+        （实测卡死 15+ 分钟无进展，CPU/RSS 完全静止）。
+        设置超时后 recv 抛 socket.timeout → send_msg 捕获后返回 None →
+        baostock 查询层返回 error_msg='网络接收错误。' → 上层关键字检查
+        （'接收'/'网络'）触发 logout+login 重建连接自愈。
+        注意：每次 login 后必须重设——bs.login() 会新建 socket（默认无超时）。
+        """
+        try:
+            import baostock.common.context as bs_context
+            sock = getattr(bs_context, 'default_socket', None)
+            if sock is not None:
+                sock.settimeout(timeout)
+        except Exception as e:
+            self.logger.debug(f"设置 socket 超时失败（不影响运行）: {e}")
     
     def logout(self):
         """退出Baostock"""
@@ -184,7 +204,7 @@ class BaostockClient:
             frequency=frequency, adjustflag=adjustflag)
         if (result.error_code != '0' and not retried
                 and any(k in str(result.error_msg).lower()
-                        for k in ('登录', 'login', '未登录'))):
+                        for k in ('登录', 'login', '未登录', '接收', '网络'))):
             self.logger.warning(
                 f"⚠️ {stock_code} 查询提示未登录，重新登录后重试...")
             try:
