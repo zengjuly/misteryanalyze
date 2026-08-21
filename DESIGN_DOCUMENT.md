@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.18.3
+- **版本**: 1.19.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-20
+- **更新日期**: 2026-08-16
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1568,6 +1568,44 @@ cron 环境缺失 → WatchlistManager 落到开发库 `data/mystery_cache.db`
 - `_cache_stale`：08-19 缓存判落后（True）→ 回退在线源；08-20 缓存不落后（False）
 - 盘中保护：14:00 查询返回 08-19（未收盘行情不算最新交易日）
 - 全量测试套件 69/69 OK
+
+### 4.23 数据源重构·多源退避链升级（docs/0821.md，v1.19.0，2026-08-16）
+
+**目标**：🥇同花顺扶摇(ths_official) → 🥈tdx-api容器 → 🥉tdx_local 三源退避；
+akshare/baostock 代码完整保留但退出活动链（静默向下兼容，零开销）。
+
+**config/data_source 拓扑**：
+- `primary: "ths_official"`，`fallback: ["tdx_api", "tdx_local"]`
+- `ths_config`：script_path（fuyao.py）+ adjust=forward；**api_key 走统一环境变量
+  HITHINK_FINANCE_API_KEY**（AGENTS.md 规范：key 不写入配置/代码/日志/git）
+- `tdx_api_config`：api_url=localhost:8080/api + timeout=5
+
+**data/ths_client.py（新建，ThsOfficialClient）**：
+- fuyao.py --compact 子进程管道（python 解释器用 sys.executable——venv 依赖）
+- **真实 CLI 适配**（2026-08 实测，与文档参数不同）：prices-historical 用
+  `--thscode 600519.SH --start-ms --end-ms --adjust forward`（文档的 --thscodes/
+  --start-date/--adjust qfq 均为旧参数）；返回 date_ms/open_price/... → 统一中文列
+- 端点：prices-historical（日K，前复权）/ valuations-snapshot（PE/PB，item[] 结构）/
+  index-catalog + index-constituents（板块成分，--thscode）/ index-historical（板块K线）
+
+**data/tdx_api_client.py（新建，TdxApiClient）**：
+- GET /api/kline-all?code=600519&type=day（**无 /ths 后缀**——ths 端点返回负值脏数据）
+- 实际响应 Time/Open/...列：价格 ×1000（/1000 还原）；缺换手率→None（不伪造，
+  上游换手率完整性检查处理）；板块/财务返回空优雅触发链条下移
+
+**market_data_client.py 集成（保留全部现有修复）**：
+- __init__ 新增 ths_client/tdx_api_client；source_order 自动 = [ths_official,
+  tdx_api, tdx_local]（config 驱动）
+- _fetch_from_source 新增两个源分支（仅 daily；周/月仍由上层重采样）；
+  换手率完整性/数据落后检查/健康熔断/空结果快速切换逻辑全部保留
+- 实测：sh600519 路由 `[ths_official] 149条 596ms`（茅台 1272.83 前复权）；
+  key 失效退避 `[tdx_api] 33条 384ms`——双保险闭环；单股分析完整回归 EXIT=0
+
+**注意**：ths 主源缺换手率字段（fuyao 无）→ 换手率维度显示 0.00%（数据源限制，
+后续可经成交额+流通股本换算补齐）
+
+**验证**：单测 69/69；ths fetch_daily/financials 实测（茅台 1272.83/PE19.54）；
+退避链实测（ths→tdx_api）；单股分析回归 EXIT=0
 
 ## 5. 接口设计
 

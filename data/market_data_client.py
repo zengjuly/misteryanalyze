@@ -58,6 +58,11 @@ class MarketDataClient:
 
     def __init__(self, config: Dict):
         ds_cfg = config.get("data_source", {}) if config else {}
+        # 🥇 同花顺官方扶摇主源 + 🥈 tdx-api 容器次源（docs/0821.md）
+        from ths_client import ThsOfficialClient
+        from tdx_api_client import TdxApiClient
+        self.ths_client = ThsOfficialClient(config)
+        self.tdx_api_client = TdxApiClient(config)
         self.ak_client = AkshareClient(
             rate_limit=ds_cfg.get("rate_limit_akshare", 0.3),
             timeout=ds_cfg.get("timeout", 30))
@@ -464,8 +469,20 @@ class MarketDataClient:
 
     def _fetch_from_source(self, src: str, code: str, period: str,
                            start_date: str, end_date: str) -> pd.DataFrame:
-        """从指定源获取数据"""
+        """从指定源获取数据（docs/0821.md: ths_official → tdx_api → tdx_local）"""
         adjust = self.adjust
+        if src == "ths_official":
+            # 同花顺扶摇主源（仅日线；周/月由上层重采样）
+            if period == "daily":
+                return self.ths_client.fetch_daily(
+                    code, start_date=start_date, end_date=end_date)
+            return pd.DataFrame()
+        if src == "tdx_api":
+            # tdx-api 容器次源（仅日线；周/月由上层重采样）
+            if period == "daily":
+                return self.tdx_api_client.fetch_daily(
+                    code, start_date=start_date, end_date=end_date)
+            return pd.DataFrame()
         if src == "tdx_local":
             # 通达信本地源仅支持日线；周/月由上层 prefer_resample 重采样
             if period == "daily":

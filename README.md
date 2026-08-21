@@ -7,7 +7,8 @@
 ## 系统特性
 
 ### 🎯 核心功能
-- **数据获取**: 基于baostock的股票数据获取
+- **数据获取**: 🥇同花顺扶摇(ths_official) → 🥈tdx-api容器 → 🥉tdx_local 三源退避链
+  （akshare/baostock 保留代码静默兼容，docs/0821.md）
 - **技术指标**: 均线系统、趋势指标、动能指标
 - **Mystery理论**: 三振共振、主升浪分析、平台突破
 - **形态识别**: 头肩顶/底、双重顶/底、三角形、楔形
@@ -560,9 +561,9 @@ streamlit run web/app.py --server.port 1888 --server.headless true
 
 ## 版本信息
 
-- **版本**: 1.18.2
+- **版本**: 1.19.0
 - **作者**: Mystery Team
-- **更新时间**: 2026-08-20
+- **更新时间**: 2026-08-16
 - **Python版本**: 3.12（venv: /home/ai/ai_runner/venv）
 
 ## 首次部署 Checklist
