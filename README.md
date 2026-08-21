@@ -208,6 +208,10 @@ python3 run_analysis.py --test
 > **按需自动拉取**——个股分析页打开时自动获取并缓存（FinancialStorage / DataFeeder），
 > 无需单独同步命令。
 >
+> 💡 **重建数据库（清缓存）**：`scripts/rebuild_db.py` 一键清除本地所有缓存并重建空库——
+> `--dry-run` 预览 / `--sync` 重建后全量重同步 / `--days 2000` 指定回溯天数 /
+> `--yes` 无人值守（建议先 `sudo systemctl stop mystery-web` 再执行）。
+>
 > 💡 **性能说明**：同步优先走**通达信本地数据源**（.day 文件）+ 增量路径（缓存直读，毫秒级），
 > 仅本地缺失时才回退 akshare/baostock 网络。全量 5208 只首次建缓存约 **12 分钟**；
 > 每日增量同步（缓存已有）更快（分钟级）。可安装通达信数据包进一步加速：
