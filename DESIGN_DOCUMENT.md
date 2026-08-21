@@ -3,9 +3,9 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.19.0
+- **版本**: 1.20.0
 - **创建日期**: 2026-08-09
-- **更新日期**: 2026-08-16
+- **更新日期**: 2026-08-21
 - **文档类型**: 系统设计文档
 - **目标读者**: 后续开发人员、维护人员、项目管理者
 
@@ -1606,6 +1606,35 @@ akshare/baostock 代码完整保留但退出活动链（静默向下兼容，零
 
 **验证**：单测 69/69；ths fetch_daily/financials 实测（茅台 1272.83/PE19.54）；
 退避链实测（ths→tdx_api）；单股分析回归 EXIT=0
+
+### 4.24 本地 MarketDB（DuckDB）缓存中枢（docs/0822.md，v1.20.0，2026-08-21）
+
+**目标**：消除逐股 subprocess 进程开销——fuyao 全量数据先"拉回本地"DuckDB
+（MarketDB），Python 直接本地秒级查询接管。
+
+**MarketDB 初始化**（Financial-API 官方 SDK）：
+- `python python/bootstrap.py --prefer-local [--force]`——全市场行情/复权因子
+  同步到 `data/market.duckdb`（raw_kline_daily 1021 万行 / 复权因子 5.7 万，
+  max_date=最新交易日）；bootstrap 自身判定"空库/落后才 FULL"（增量）
+- SDK：`from marketdb import MarketDB; MarketDB.open(path).get_daily(
+  "600519.SH", start, end, adjust="forward")`——v_daily_qfq 前复权视图
+
+**config**：ths_config 新增 `marketdb_dir`（Financial-API/data，env
+MARKETDB_DB_PATH 优先）
+
+**ths_client.py 重构（本地优先 + 兜底）**：
+- `_fetch_daily_local`：MarketDB.get_daily → 统一中文列，秒级（300ms）
+- **踩坑**：v_daily_qfq 成交额列名为 `turnover`（非 amount）——
+  `df.get('amount', 0)` 返回 int → `.astype` 崩溃（'int' object has no
+  attribute 'astype'）→ 修复按 turnover/amount 列分支取值
+- `sync_market_data(force=False)`：盘前增量离线同步（bootstrap --prefer-local，
+  供扫描初始化调用）
+- fetch_daily：本地 MarketDB → fuyao subprocess 兜底
+- **注意**：MarketDB 前复权（v_daily_qfq）与 fuyao forward 基准不同
+  （茅台 1341.99 vs 1272.83）——同源内一致，跨源有基准差异（可接受）
+
+**实测**：ths_official + MarketDB 本地 316ms/149 条（原 subprocess 596ms）；
+单股分析回归 EXIT=0；单测 69/69
 
 ## 5. 接口设计
 

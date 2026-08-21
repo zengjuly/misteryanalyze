@@ -285,6 +285,7 @@ data_source:
   # 同花顺官方扶摇 SDK 配置（api_key 走统一环境变量 HITHINK_FINANCE_API_KEY，不入配置）
   ths_config:
     script_path: "/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py"
+    marketdb_dir: "/home/ai/ai_runner/stock/Financial-API/data"  # 本地 MarketDB DuckDB 中枢（docs/0822.md）
     adjust: "forward"            # 统一前复权（fuyao 实际取值: none/forward/backward）
 
   # Go tdx-api 本地 Docker 容器服务配置
