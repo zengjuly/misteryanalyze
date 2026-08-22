@@ -2144,6 +2144,30 @@ stop 异常传播导致 spinner 不关闭，前端残留"正在分析"）
 
 **提交**：fix: 自选股名称回填+板块成分股.TI格式+所属板块db兜底(docs/082213)
 
+### 4.46 板块监控排序修复 + 所属板块行业优先（docs/082214，2026-08-23）
+
+**用户反馈**：①板块监控成分股钻取报
+`DataFrame.sort_values() got an unexpected keyword argument 'reverse'`
+②个股分析股票名不显示、板块显示不正确（要求只显示一个时显示行业板块）
+
+**① 板块监控（web/pages/2_📊_板块监控.py）**：
+- `sort_values('综合评分', reverse=True)` → `ascending=False`
+  （pandas 无 reverse 参数，页面崩溃根因）
+- 验证：排序 [90, 50, 10] ✓
+
+**② 个股分析名称+板块（web/pages/1_📈_个股分析.py + 数据）**：
+- 根因：get_stock_info 默认过滤 type='1'，补的 412 只 type='stock' 被滤
+  → stock_dict 缺 sz000915 → name 显示代码
+- 数据修复：UPDATE type='stock'→'1'，get_stock_info 恢复 5559 只
+  （sz.000915=华特达因 ✓）
+- 板块逻辑：行业优先（stock_industry_info.industry，session 缓存
+  ind_industry_map）→ 概念/多板块兜底 → '未知'（不再显示"错误"）
+
+**注**：412 只新补股票无行业（TDX 未覆盖，如 sz.000915）→ 显示"未知"为真实缺失；
+代码已正确兜底不报错
+
+**提交**：fix: 板块监控sort修复+所属板块行业优先+证券列表type修正
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

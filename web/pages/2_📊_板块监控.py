@@ -135,7 +135,7 @@ try:
             prog.empty()
             if results:
                 rdf = pd.DataFrame(results).sort_values(
-                    '综合评分', reverse=True)
+                    '综合评分', ascending=False)
                 from web.utils.table_links import render_code_link_table
                 render_code_link_table(
                     rdf, code_col='代码', width="stretch", height=420)

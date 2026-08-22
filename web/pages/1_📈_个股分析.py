@@ -300,25 +300,34 @@ def _render_report(ctx):
     db = MysteryDB()
 
     st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
-    # 所属板块（docs/082206: 只用 session；docs/082213: try 包裹+db兜底，防异常显示"错误"）
+    # 所属板块（docs/082213: try 包裹+db兜底；行业优先——用户要求只显示一个时显示行业）
+    industry_display = ''
     try:
-        ind_map = st.session_state.get('industry_map') or {}
-        cm = ind_map.get('code_map') or {}
-        multi = ind_map.get('multi_map') or {}
-        blocks = multi.get(db_code) or multi.get(code)
-        if blocks:
-            industry_display = '、'.join(str(b) for b in blocks if b)
-        else:
-            industry_display = cm.get(db_code) or cm.get(code) or ''
-        if not industry_display or industry_display == '未知':
-            # db 行业兜底（stock_industry_info.industry）
+        # 1. 行业板块优先（stock_industry_info.industry，session 缓存避免全量读）
+        if 'ind_industry_map' not in st.session_state:
             try:
                 row = db.get_stock_info(limit=None)
+                _m = {}
                 if row is not None and not row.empty and 'industry' in row.columns:
-                    m = dict(zip(row['code'].astype(str), row['industry']))
-                    industry_display = m.get(db_code) or m.get(code) or '未知'
+                    for c, ind in zip(row['code'].astype(str), row['industry']):
+                        if ind and str(ind) != 'nan':
+                            _m[str(c).replace('.', '')] = str(ind)
+                st.session_state['ind_industry_map'] = _m
             except Exception:
-                industry_display = '未知'
+                st.session_state['ind_industry_map'] = {}
+        industry_display = st.session_state['ind_industry_map'].get(code, '')
+        # 2. 行业缺失 → session industry_map（概念/多板块）
+        if not industry_display:
+            ind_map = st.session_state.get('industry_map') or {}
+            cm = ind_map.get('code_map') or {}
+            multi = ind_map.get('multi_map') or {}
+            blocks = multi.get(db_code) or multi.get(code)
+            if blocks:
+                industry_display = '、'.join(str(b) for b in blocks if b)
+            else:
+                industry_display = cm.get(db_code) or cm.get(code) or ''
+        if not industry_display:
+            industry_display = '未知'
     except Exception:
         industry_display = '未知'
     st.info(f"🏢 所属板块: **{industry_display}**")
