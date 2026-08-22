@@ -162,6 +162,30 @@ class DataFeeder:
         :param refresh: 强制从在线源刷新行业分类
         :return: {'code_map': {code: 行业名}, 'industry_codes': {行业名: [codes]}}
         """
+        # 0.5 db 缓存优先（修复: TDX 分支每次全量解析5s+，db 已填充时直接秒回）
+        if not refresh:
+            try:
+                from db_manager import MysteryDB
+                db = MysteryDB()
+                df = db.get_stock_info(limit=None)
+                if df is not None and not df.empty and 'industry' in df.columns:
+                    filled = df[df['industry'].notna()
+                                & (df['industry'].astype(str) != '')
+                                & (df['industry'].astype(str) != 'nan')]
+                    if len(filled) > 100:  # 已填充足够数据
+                        code_map = dict(zip(filled['code'],
+                                            filled['industry']))
+                        industry_codes = {}
+                        for c, ind in code_map.items():
+                            industry_codes.setdefault(str(ind), []).append(c)
+                        multi_map = {c: [str(ind)]
+                                     for c, ind in code_map.items()}
+                        return {'code_map': code_map,
+                                'industry_codes': industry_codes,
+                                'multi_map': multi_map,
+                                'source': 'db'}
+            except Exception as e:
+                logger.warning(f"⚠️ DataFeeder 行业缓存读取失败: {str(e)[:60]}")
         # 0. TDX 本地板块优先（docs/081601.md §二: 通达信行业板块）
         #    本机无 TDX_HOME/block 文件 → 返回空 → 继续 db 缓存/在线源
         try:

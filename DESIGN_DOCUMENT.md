@@ -1805,6 +1805,27 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **待用户**：`sudo systemctl restart mystery-web`（加载 HITHINK key，修复板块监控）
 
+### 4.31 个股分析提速（get_industry_data db 缓存优先，2026-08-22）
+
+**问题（用户反馈）**：个股分析页面很慢（"正在分析 XXXX" 数秒+）
+
+**根因**：数据库重建后 `stock_industry_info.industry` 全空（0/5147）→
+`get_industry_data()` 的 db 缓存分支失效（需 >100 只填充）→ 每次页面加载
+都走 **TDX 板块全量解析 5.5s**（TdxBlockClient.get_industry_blocks 解析
++ update_industries 写库）
+
+**修复**：
+1. 跑一次 TDX 填充 db（4487/5147 只行业已入库存）
+2. `get_industry_data` **db 缓存检查提前到 TDX 之前**（0.5 优先）：
+   已填充（>100）时直接返回 db 数据，跳过 TDX 全量解析
+
+**效果**：get_industry_data **5.5s → 0.09s（60倍）**
+- 个股分析缓存命中路径总耗时：**1.02s**（get_daily 0.5 + 缓存 0 + 行业 0.05 + 平台 0.46）
+- 页面整体 2-3s 内完成
+
+**备注**：db 缓存路径 multi_map 为单归属（主板块），TDX 多归属（7板块/只）
+在 refresh=True 时才全量重建；需要多归属展示时可手动 `get_industry_data(refresh=True)`
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
