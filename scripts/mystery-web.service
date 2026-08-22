@@ -6,6 +6,8 @@ After=network.target
 User=ai_runner
 WorkingDirectory=/home/ai/ai_runner/stock/stock_analyzer
 Environment="PATH=/home/ai/ai_runner/venv/bin"
+# 敏感凭据（HITHINK_FINANCE_API_KEY 等）经 EnvironmentFile 注入，不入仓库
+EnvironmentFile=/etc/mystery-web.env
 Environment="MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db"
 Environment="TDX_VIPDOC_DIR=/home/ai/ai_runner/stock/data/tdx_vipdoc"
 Environment="SOURCE_REPORT_DIR=/home/ai/ai_runner/stock/data/logs/"
