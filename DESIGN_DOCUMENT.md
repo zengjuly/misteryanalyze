@@ -2083,6 +2083,24 @@ key 放顶层 config 时需用 `(config or {}).get()` 读取（首次注入失�
 
 **提交**：fix(web): 修复个股深度分析无结果(_render_report调用顺序NameError)
 
+### 4.43 修复分析完成后 spinner 卡住（st.stop 移出 spinner 块，2026-08-22）
+
+**问题（用户反馈）**：分析完成（✅ 已显示）但「正在分析」spinner 一直转
+
+**根因**：3 处 `st.stop()` 在 `with st.spinner(...)` 块内（streamlit 已知坑：
+stop 异常传播导致 spinner 不关闭，前端残留"正在分析"）
+
+**修复**（web/pages/1_📈_个股分析.py）：
+- 日K失败 `st.stop()` → `raise ValueError(...)`（外层统一处理）
+- 写 session 的 `st.stop()` 移出 spinner 块（try/except/else 结构）
+- 异常分支存 `_err = (e, traceback)`，spinner 块外统一 error+stop
+
+**验证（AppTest）**：
+- 无 ctx → exception=0；真实数据 ctx → 渲染 8 区块 exception=0
+- st.stop 均在 spinner 块外，spinner 正常关闭
+
+**提交**：fix(web): st.stop移出spinner块 修复分析完成后spinner卡住
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

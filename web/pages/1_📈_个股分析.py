@@ -170,7 +170,7 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
 
                 if long_df is None or long_df.empty:
                     st.error(f"❌ 无法获取 {code} 行情数据")
-                    st.stop()
+                    raise ValueError(f"无法获取 {code} 行情数据")
 
                 # 分析用同一 DataFrame（指标已在 get_daily 内附带 MA）
                 daily = long_df
@@ -253,22 +253,27 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                         'cl': cl,
                     })
 
-            st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
-
-            # ★ 结果全部进 session，与 widget rerun 解耦（docs/082210）
-            st.session_state['stock_analysis'] = {
-                'code': code, 'name': name, 'db_code': db_code,
-                'last_date': last_date, 'industry_display': industry_display
-                if 'industry_display' in dir() else '未知',
-                'signal': signal, 'daily': daily, 'long_df': long_df,
-                'ap': ap, 'plat': plat, 'det': det, 'cl': cl,
-            }
-            st.stop()
         except Exception as e:
-            st.error(f"❌ 分析异常: {e}")
             import traceback
-            st.code(traceback.format_exc())
-            st.stop()
+            _err = (e, traceback.format_exc())
+        else:
+            _err = None
+
+    # 统一错误处理（spinner 块外，st.stop 不会卡住 spinner）
+    if _err is not None:
+        st.error(f"❌ 分析异常: {_err[0]}")
+        st.code(_err[1])
+        st.stop()
+
+    # ★ 结果全部进 session，与 widget rerun 解耦（docs/082210）
+    st.session_state['stock_analysis'] = {
+        'code': code, 'name': name, 'db_code': db_code,
+        'last_date': last_date, 'industry_display': industry_display
+        if 'industry_display' in dir() else '未知',
+        'signal': signal, 'daily': daily, 'long_df': long_df,
+        'ap': ap, 'plat': plat, 'det': det, 'cl': cl,
+    }
+    st.stop()
 
 # ---------- 展示区（与 button 解耦，docs/082210：切周期不重跑分析） ----------
 ctx = st.session_state.get('stock_analysis')
