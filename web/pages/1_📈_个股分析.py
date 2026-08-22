@@ -276,8 +276,6 @@ if not ctx:
     st.info("请选择股票后点击「开始分析」")
     st.stop()
 
-_render_report(ctx)
-
 def _render_report(ctx):
     """渲染分析结果（docs/082210：ctx 来自 session，切周期仅重绘不重算）"""
     code = ctx['code']
@@ -712,3 +710,7 @@ def _render_report(ctx):
             help="信号摘要")
     except Exception as ex:
         st.caption(f"Excel导出不可用: {ex}")
+
+# 函数定义后调用（docs/082210：切周期 rerun 时 button=False，直接渲染 session 结果）
+if 'ctx' in dir() and ctx:
+    _render_report(ctx)

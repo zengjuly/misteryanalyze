@@ -2062,7 +2062,26 @@ key 放顶层 config 时需用 `(config or {}).get()` 读取（首次注入失�
 **⚠️ 安全提醒**：key 明文在 config/config.yaml，**会随 git 提交进入远端仓库**；
 如不想入库可改放 config.local.yaml（.gitignore）由 cfg 读取
 
-**提交**：feat: HITHINK API Key 统一进config,ths_client启动注入env全局生效
+**提交**：feat: HITHINK API Key统一进config,ths_client启动注入env全局生效
+
+### 4.42 修复个股深度分析无结果（_render_report 调用顺序，2026-08-22）
+
+**问题（用户反馈）**：个股深度分析无结果
+
+**根因**：082210 重构时 `_render_report(ctx)` **调用在函数定义之前**
+（模块级顺序错误）→ 每次 rerun 执行到调用处 NameError → 页面崩溃无结果
+
+**修复**（web/pages/1_📈_个股分析.py）：
+- 删除 279 行提前调用
+- 函数定义后（文件末尾）调用：
+  `if 'ctx' in dir() and ctx: _render_report(ctx)`
+
+**验证（AppTest 官方框架）**：
+- 场景1 无 ctx → 正常提示"请选择股票"，exception=0
+- 场景2 真实数据 ctx → 完整渲染（success=1，subheader=8），exception=0
+- 切周期路径：button=False 走 ctx 渲染（082210 架构保持）
+
+**提交**：fix(web): 修复个股深度分析无结果(_render_report调用顺序NameError)
 
 ## 5. 接口设计
 
