@@ -2021,6 +2021,28 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **提交**：fix(web): 分析结果入session，K线周期切换不重跑分析；8项按固定键展示
 
+### 4.40 板块强度本地化（个股分析提速 30.9s→4.5s，2026-08-22）
+
+**问题（用户反馈"个股分析慢"）**：首次分析卡 30s+
+
+**定位**：`build_sector_strength_map()`（082206 B3 在综合分析前调用）
+**30.9s**——calc_sector_strength 逐个板块在线拉 index-historical（120 板块×0.3s）
+且 fuyao 网络波动时返回 0 板块
+
+**修复（2 文件）**：
+1. `web/pages_util.py`：
+   - 新增 `_calc_from_sector_kline()`：读本地 sector_kline 表（26万行）算强度，
+     得分公式不变（MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3）
+   - `calc_sector_strength` 优先本地表，在线源仅兜底
+2. `data/db_manager.py`：新增 `load_all_sector_kline()`（全表读含 sector_name）
+
+**效果**：
+- build_sector_strength_map：30.9s → **4.49s（7倍）**，375 板块全量（之前 0）
+- streamlit 常驻进程：_strength_cache 30min + session_state 双重缓存，
+  首次 4.5s 后续秒回（命中 signal 缓存时不调用）
+
+**提交**：perf: 板块强度优先本地sector_kline表 个股分析提速(30.9s→4.5s)
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

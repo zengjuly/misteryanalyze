@@ -18,14 +18,75 @@ _strength_cache = {'ts': 0.0, 'rows': []}
 _CACHE_TTL = 1800
 
 
-def calc_sector_strength(use_cache: bool = True) -> list:
-    """基于 index-historical 板块指数K线计算强度，禁止个股抽样/全量。
+def _calc_from_sector_kline() -> list:
+    """从本地 sector_kline 表计算板块强度（docs/082210: 秒级，替代在线逐个拉）
     得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3
+    """
+    try:
+        from db_manager import MysteryDB
+        db = MysteryDB()
+        df = db.load_all_sector_kline()
+        if df is None or df.empty:
+            return []
+        rows = []
+        for code, g in df.groupby('sector_code'):
+            g = g.sort_values('trade_date')
+            close = g['close'].astype(float)
+            if len(close) < 21:
+                continue
+            last = float(close.iloc[-1])
+            ma20 = float(close.tail(20).mean())
+            if ma20 <= 0:
+                continue
+            bias = (last / ma20 - 1) * 100
+            chg10 = 0.0
+            if len(close) > 11:
+                past = float(close.iloc[-11])
+                if past > 0:
+                    chg10 = (last / past - 1) * 100
+            amt_ratio = 1.0
+            if 'amount' in g.columns:
+                a5 = float(g['amount'].tail(5).mean() or 0)
+                a15 = float(g['amount'].tail(20).head(15).mean() or 0)
+                if a15 > 0:
+                    amt_ratio = a5 / a15
+            score = bias * 0.4 + chg10 * 0.3 + (amt_ratio - 1) * 100 * 0.3
+            name = str(g['sector_name'].iloc[-1]) \
+                if 'sector_name' in g.columns else code
+            rows.append({
+                '板块': name,
+                '板块代码': code,
+                'MA20偏离%': round(bias, 2),
+                '近10日涨幅%': round(chg10, 2),
+                '成交额放大': round(amt_ratio, 2),
+                '板块得分': round(float(score), 2),
+            })
+        rows.sort(key=lambda r: r['板块得分'], reverse=True)
+        return rows
+    except Exception as e:
+        logger.warning(f'⚠️ _calc_from_sector_kline 失败: {e}')
+        return []
+
+
+def calc_sector_strength(use_cache: bool = True) -> list:
+    """基于板块指数K线计算强度，禁止个股抽样/全量。
+    得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3
+    （docs/082210 优化: 优先读 sector_kline 本地表秒级；在线源仅兜底）
     """
     import time
     if use_cache and _strength_cache['rows'] \
             and time.time() - _strength_cache['ts'] < _CACHE_TTL:
         return _strength_cache['rows']
+    try:
+        # 1. 本地 sector_kline 表优先（26万行已同步，秒级）
+        rows = _calc_from_sector_kline()
+        if rows:
+            _strength_cache['ts'] = time.time()
+            _strength_cache['rows'] = rows
+            return rows
+        logger.warning('⚠️ sector_kline 本地无数据，走在线源')
+    except Exception as e:
+        logger.warning(f'⚠️ sector_kline 读取失败: {e}')
     try:
         import yaml
         cfg_path = os.path.join(_ROOT, 'config', 'config.yaml')

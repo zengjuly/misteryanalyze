@@ -240,6 +240,19 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def load_all_sector_kline(self) -> pd.DataFrame:
+        """读取全部板块指数K线（sector_kline 全表，含 sector_code/sector_name，
+        docs/082210: 板块强度秒级本地计算用）"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                return pd.read_sql_query(
+                    "SELECT sector_code, sector_name, trade_date, open, "
+                    "high, low, close, volume, amount FROM sector_kline "
+                    "ORDER BY sector_code, trade_date", conn)
+            finally:
+                conn.close()
+
     def save_sector_kline(self, sector_code: str, sector_name: str,
                           df: pd.DataFrame, source_type: str = 'ths') -> int:
         """批量写入板块指数K线（INSERT OR REPLACE，幂等）
