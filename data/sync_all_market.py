@@ -187,6 +187,13 @@ def sync_all_market(periods: list = None, days: int = None,
 
     # 1. 获取全市场股票
     codes = get_all_a_shares(engine, include_index=include_index)
+    if not codes:
+        logger.error("❌ 获取全市场股票列表为空（ths_official/baostock 均失败或无缓存）")
+        # 修复: 空列表时必须报错退出，不得误报"所有股票均已完成"
+        engine.close()
+        return {'ok': 0, 'fail': 0, 'skipped': 0,
+                'elapsed': round(time.time() - start_time, 1),
+                'error': '证券列表为空'}
     if limit:
         codes = codes[:limit]
         logger.info(f"🔒 测试模式: 仅同步前 {limit} 只")

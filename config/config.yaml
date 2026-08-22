@@ -235,6 +235,8 @@ tdx:
 # 全市场同步配置（docs/step3.md 并发与同步优化）
 sync:
   threads:
+    ths_official: 1
+    tdx_api: 1
     tdx_local: 8      # 本地读取可多线程
     akshare: 4        # 爬虫源限速
     baostock: 1       # baostock全局单socket，必须串行（多线程会解码错误）

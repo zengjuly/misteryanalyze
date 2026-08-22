@@ -172,6 +172,27 @@ class ThsOfficialClient:
         mkt = code[:2].upper()
         return f"{pure}.{mkt}"
 
+    # ============ 0. 全市场证券列表（ths_official 优先，docs/082201） ============
+    def fetch_all_tickers(self, refresh_cache: bool = False) -> list:
+        """全市场 A 股证券列表（fuyao tickers-list --all，5559 只 in 2026-08）
+
+        返回: [{'thscode': '600000.SH', 'ticker': '600000', 'name': '浦发银行',
+                'exchange': 'SH', 'asset_type': 'a-share', 'currency': 'CNY'}, ...]
+        失败返回 []（调用方走 baostock 兜底）
+        """
+        try:
+            args = ['tickers-list', '--all']
+            if refresh_cache:
+                args.append('--refresh-cache')
+            raw = self._run_fuyao(args)
+            if not raw:
+                logger.warning("⚠️ fuyao tickers-list 返回空（网络或额度）")
+                return []
+            return raw
+        except Exception as e:
+            logger.warning(f"⚠️ tickers-list 失败: {str(e)[:100]}")
+            return []
+
     # ============ 1. 个股历史行情 ============
     def fetch_daily(self, stock_code: str, days: int = 1100,
                     start_date: str = None, end_date: str = None,

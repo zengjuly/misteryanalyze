@@ -76,9 +76,44 @@ class MysteryDataEngine:
     def sync_stock_list(self, include_index: bool = False) -> int:
         """
         同步全市场证券列表到本地缓存（query_stock_basic 全量）
+        🥇 优先 ths_official（docs/082201: primary 源也应提供证券列表），
+        🥈 baostock 兜底（原 hardcode 逻辑，网络失败不再阻塞）
         :param include_index: 是否包含指数（默认仅股票）
         :return: 写入数量
         """
+        # 1. ths_official 优先（market_client 存在时）
+        if self.market_client is not None:
+            try:
+                codes = self.market_client.fetch_stock_list(
+                    include_index=include_index)
+                if codes:
+                    # 转 DataFrame 写入缓存（与 upsert_stock_info 兼容）
+                    import pandas as pd
+                    rows = []
+                    for c in codes:
+                        pure = c.split('.')[1]
+                        # 指数代码判定（上证000xxx/深证399xxx/北证899xxx）
+                        is_idx = (
+                            pure.startswith('000') and c.startswith('sh')
+                        ) or (pure.startswith('399') and c.startswith('sz')) \
+                            or (pure.startswith('899') and c.startswith('bj'))
+                        rows.append({
+                            'code': c,
+                            'code_name': pure,
+                            'ipo_date': '',
+                            'out_date': '',
+                            'type': '2' if is_idx else '1',
+                            'status': '1',
+                            'industry': '',
+                        })
+                    df = pd.DataFrame(rows)
+                    n = self.db.upsert_stock_info(df)
+                    logger.info(
+                        f"✅ 同步证券列表(ths_official) {n} 条（含指数: {include_index}）")
+                    return n
+            except Exception as e:
+                logger.warning(f"⚠️ ths_official 证券列表异常: {e}")
+        # 2. baostock 兜底（原逻辑）
         if not self.ensure_login():
             logger.error("❌ baostock登录失败，无法同步证券列表")
             return 0
@@ -96,7 +131,7 @@ class MysteryDataEngine:
                 df = df[df['type'] == '1'].copy()
                 df = df[df['status'] == '1'].copy()
             n = self.db.upsert_stock_info(df)
-            logger.info(f"✅ 同步证券列表 {n} 条（含指数: {include_index}）")
+            logger.info(f"✅ 同步证券列表(baostock兜底) {n} 条（含指数: {include_index}）")
             return n
         except Exception as e:
             logger.error(f"❌ 同步证券列表异常: {e}")

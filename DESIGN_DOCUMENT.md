@@ -1734,6 +1734,31 @@ from_sector 已就绪）；板块监控页可直连真实指数
 **坑**：FinancialStorage 构造参数是 MysteryDB 实例（非 config dict）——
 `FinancialStorage(MysteryDB())`；页面 cfg 变量需全局可用（ths 兜底用）
 
+### 4.28 证券列表 ths_official 优先 + 空列表报错修复（2026-08-22）
+
+**问题（用户反馈）**：`sync_all_market.py --force` 打印
+"❌ Baostock登录失败 → 证券列表同步失败 → ✅ 所有股票均已完成（断点）" 矛盾日志
+
+**根因链**：
+1. `sync_stock_list` 硬编码走 baostock（data_engine.py:82），`primary:
+   ths_official` 只用于 K线——baostock 网络挂时证券列表必失败
+2. 本地缓存被清空（重建）→ `get_all_a_shares` 缓存路径失效 → 走网络同步
+3. 网络同步失败返回 0 → `get_all_a_shares` 返回 `[]` → main 里 `pending=[]`
+   → **误报"所有股票均已完成（断点）"**（空列表走了"无需同步"分支）
+
+**修复**：
+- `ThsOfficialClient.fetch_all_tickers()`：fuyao `tickers-list --all`（5559 只，含名称）
+- `MarketDataClient.fetch_stock_list()`：ths_official 优先，baostock 兜底
+- `sync_stock_list`：优先 market_client（ths_official），失败再 baostock
+- `sync_all_market`：`get_all_a_shares` 返回空 → 报错退出（返回
+  `{'error': '证券列表为空'}`），不再误报"已完成"
+
+**验证（9/9）**：fetch_all_tickers 5559 只 / fetch_stock_list 5147（过滤指数）/
+sync_stock_list 写入 5147 / 空列表报错 error=证券列表为空 / 本地缓存 5147
+
+**备注**：ths_official 列表无 ipo/out 日期，type/status 全部置 1（与查询兼容）；
+名称由名称字典（names.json）另行维护
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

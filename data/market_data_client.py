@@ -127,6 +127,54 @@ class MarketDataClient:
                         f"复权因子={'可用' if self.tdx_gbbq.factors_available else '不可用→连续性检查'}）")
 
     # ============ 对外接口 ============
+    def fetch_stock_list(self, include_index: bool = False) -> list:
+        """全市场证券列表（🥇 ths_official tickers-list 优先，失配 baostock 兜底）
+
+        返回: 9位代码列表 ['sh.600000', ...]（含指数时含指数代码）
+        """
+        # 1. ths_official 优先（docs/082201: primary 源也应提供证券列表）
+        try:
+            tickers = self.ths_client.fetch_all_tickers()
+            if tickers:
+                codes = []
+                for t in tickers:
+                    ths = t.get('thscode', '')
+                    if '.' not in ths:
+                        continue
+                    pure, mkt = ths.split('.')
+                    mkt = mkt.lower()
+                    if mkt not in ('sh', 'sz', 'bj'):
+                        continue
+                    # 指数（含 include_index 时保留）
+                    if pure.startswith(('000', '399', '899')) and len(pure) == 6 \
+                            and not include_index:
+                        continue
+                    codes.append(f"{mkt}.{pure}")
+                if codes:
+                    logger.info(f"📋 ths_official tickers-list: {len(codes)} 只")
+                    return codes
+                logger.warning("⚠️ ths_official 证券列表为空")
+        except Exception as e:
+            logger.warning(f"⚠️ ths_official 证券列表失败: {str(e)[:80]}")
+        # 2. baostock 兜底（旧逻辑）
+        from baostock_client import BaostockClient
+        bs = BaostockClient()
+        if bs.login():
+            try:
+                import baostock as bs_mod
+                rs = bs_mod.query_stock_basic()
+                if rs.error_code == '0':
+                    df = rs.get_data()
+                    if df is not None and not df.empty:
+                        if not include_index:
+                            df = df[df['type'] == '1'].copy()
+                        codes = [f"{r['code']}" for _, r in df.iterrows()]
+                        logger.info(f"📋 baostock 兜底: {len(codes)} 只")
+                        return codes
+            except Exception as e:
+                logger.warning(f"⚠️ baostock 证券列表失败: {str(e)[:80]}")
+        return []
+
     def fetch_daily(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         # 尝试本地增量更新（配置启用且本地有.day文件时）
         if self.incremental_enabled:
