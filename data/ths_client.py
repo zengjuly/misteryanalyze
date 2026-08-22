@@ -147,7 +147,7 @@ class ThsOfficialClient:
             logger.warning(f"⚠️ MarketDB 同步失败: {str(e)[:100]}")
         return False
 
-    def _run_fuyao(self, args: list) -> list:
+    def _run_fuyao(self, args: list, timeout: int = 30) -> list:
         """拉起 fuyao.py 子进程，提取纯净 JSON 流"""
         if not os.path.exists(self.script_path):
             logger.warning(f"❌ 找不到同花顺 SDK: {self.script_path}")
@@ -155,7 +155,7 @@ class ThsOfficialClient:
         cmd = [self._fuyao_python, self.script_path, '--compact'] + args
         try:
             res = subprocess.run(cmd, capture_output=True, text=True,
-                                 check=True, encoding='utf-8', timeout=30)
+                                 check=True, encoding='utf-8', timeout=timeout)
             out = res.stdout.strip()
             if out:
                 data = json.loads(out)
@@ -184,7 +184,8 @@ class ThsOfficialClient:
             args = ['tickers-list', '--all']
             if refresh_cache:
                 args.append('--refresh-cache')
-            raw = self._run_fuyao(args)
+            # tickers-list --all 输出 4 万+ 行 JSON，必须放宽超时（默认30s不够）
+            raw = self._run_fuyao(args, timeout=120)
             if not raw:
                 logger.warning("⚠️ fuyao tickers-list 返回空（网络或额度）")
                 return []
