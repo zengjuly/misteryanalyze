@@ -113,7 +113,17 @@ class DataFeeder:
                 if cached is not None and not cached.empty:
                     last = str(cached['date'].max())[:10]
                     latest = get_latest_trade_date()
-                    if latest and last >= latest:
+                    # 指数放宽: TDX 本地文件滞后 1-3 天（通达信未同步最新）属正常，
+                    # 不因缺一天就重拉在线源（在线源指数支持差且重试拖 30s+）
+                    _is_idx = (
+                        (db_code.startswith('sh') and db_code[3:].startswith('000'))
+                        or (db_code.startswith('sz') and db_code[3:].startswith('399'))
+                        or (db_code.startswith('bj') and db_code[3:].startswith('899'))
+                    )
+                    if latest and (last >= latest or (
+                            _is_idx and last >= str(
+                                pd.to_datetime(latest) - pd.Timedelta(days=3)
+                            )[:10])):
                         m = {'date': '日期', 'open': '开盘价', 'high': '最高价',
                              'low': '最低价', 'close': '收盘价',
                              'volume': '成交量', 'amount': '成交额',

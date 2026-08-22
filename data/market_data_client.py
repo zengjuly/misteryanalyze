@@ -183,6 +183,19 @@ class MarketDataClient:
         return []
 
     def fetch_daily(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        # 指数快速路径（2026-08-22 优化: 指数无换手率/本地文件即权威）
+        # tdx_local 本地 .day 秒回; ths_official/tdx_api 指数支持差且重试拖 30s+；
+        # 指数不依赖增量锚点（db 缓存可能为空）→ 无条件先试 tdx_local
+        _is_idx = (
+            (code.startswith('sh') and code[3:].startswith('000'))
+            or (code.startswith('sz') and code[3:].startswith('399'))
+            or (code.startswith('bj') and code[3:].startswith('899'))
+        )
+        if _is_idx:
+            df = self._fetch_from_source('tdx_local', code, 'daily',
+                                         start_date, end_date)
+            if df is not None and not df.empty:
+                return df
         # 尝试本地增量更新（配置启用且本地有.day文件时）
         if self.incremental_enabled:
             full = self._fetch_with_incremental(code, start_date, end_date)
@@ -481,7 +494,14 @@ class MarketDataClient:
                         # 换手率完整性检查: tdx_local(.day 无换手率字段)返回全None且
                         # 缓存补齐失败时，该数据会退化筹码集中度/资金维度分析(3z)
                         # → 视为无效，切换到在线源（akshare/baostock 含换手率）
-                        if (src == 'tdx_local' and '换手率' in df.columns
+                        # 例外: 指数（sh000xxx/sz399xxx/bj899xxx）无换手率字段，不检查
+                        _is_idx = (
+                            (code.startswith('sh') and code[3:].startswith('000'))
+                            or (code.startswith('sz') and code[3:].startswith('399'))
+                            or (code.startswith('bj') and code[3:].startswith('899'))
+                        )
+                        if (src == 'tdx_local' and not _is_idx
+                                and '换手率' in df.columns
                                 and df['换手率'].notna().sum() == 0):
                             self.source_health.record(src, True, latency)
                             last_error = RuntimeError(f"{src} 换手率全None")
@@ -490,7 +510,10 @@ class MarketDataClient:
                             continue
                         # 本地数据落后检查: tdx_local 数据停在旧交易日（如周一未同步
                         # 上周五之后）→ 视为无效，切在线源拉最新（用户要求最新行情）
-                        if src == 'tdx_local' and self._cache_stale(df):
+                        # 例外: 指数（sh000xxx/sz399xxx/bj899xxx）本地文件即权威，
+                        # 滞后一天（TDX 未同步）可接受，不判定落后
+                        if src == 'tdx_local' and not _is_idx \
+                                and self._cache_stale(df):
                             self.source_health.record(src, True, latency)
                             last_error = RuntimeError(
                                 f"{src} 数据落后(最新{df['日期'].max()})")

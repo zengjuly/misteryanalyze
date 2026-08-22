@@ -26,13 +26,18 @@ class TdxApiClient:
     def fetch_daily(self, stock_code: str, days: int = 1100,
                     start_date: str = None, end_date: str = None,
                     period: str = 'daily') -> pd.DataFrame:
-        """从本地 tdx-api 容器拉取日K并统一为中文列（price×1000 → 元）"""
+        """从本地 tdx-api 容器拉取日K并统一为中文列（price×1000 → 元）
+        接口要求带交易所前缀大写代码（SZ000001/SH600519）——修复: 原来传纯数字
+        """
         pure = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
+        mkt = 'SH' if stock_code.startswith('sh') else (
+            'SZ' if stock_code.startswith('sz') else 'BJ')
+        api_code = f"{mkt}{pure}"
         try:
             import requests
             res = requests.get(
                 f"{self.api_url}/kline-all",
-                params={'code': pure, 'type': 'day'},
+                params={'code': api_code, 'type': 'day'},
                 timeout=self.timeout).json()
         except Exception as e:
             logger.debug(f"tdx-api 请求异常 [{stock_code}]: {str(e)[:80]}")
