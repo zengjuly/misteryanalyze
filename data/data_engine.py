@@ -84,13 +84,14 @@ class MysteryDataEngine:
         # 1. ths_official 优先（market_client 存在时）
         if self.market_client is not None:
             try:
-                codes = self.market_client.fetch_stock_list(
+                stocks = self.market_client.fetch_stock_list(
                     include_index=include_index)
-                if codes:
-                    # 转 DataFrame 写入缓存（与 upsert_stock_info 兼容）
+                if stocks:
+                    # 转 DataFrame 写入缓存（含名称，用户反馈: 只有代码无名称）
                     import pandas as pd
                     rows = []
-                    for c in codes:
+                    for s in stocks:
+                        c = s['code']
                         pure = c.split('.')[1]
                         # 指数代码判定（上证000xxx/深证399xxx/北证899xxx）
                         is_idx = (
@@ -99,7 +100,7 @@ class MysteryDataEngine:
                             or (pure.startswith('899') and c.startswith('bj'))
                         rows.append({
                             'code': c,
-                            'code_name': pure,
+                            'code_name': s.get('name', ''),
                             'ipo_date': '',
                             'out_date': '',
                             'type': '2' if is_idx else '1',
@@ -109,7 +110,8 @@ class MysteryDataEngine:
                     df = pd.DataFrame(rows)
                     n = self.db.upsert_stock_info(df)
                     logger.info(
-                        f"✅ 同步证券列表(ths_official) {n} 条（含指数: {include_index}）")
+                        f"✅ 同步证券列表(ths_official) {n} 条"
+                        f"（含指数: {include_index}, 含名称）")
                     return n
             except Exception as e:
                 logger.warning(f"⚠️ ths_official 证券列表异常: {e}")

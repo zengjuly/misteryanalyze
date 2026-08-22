@@ -1777,6 +1777,34 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **备注**：断点文件带 periods 元数据，参数变更自动失效重同步（docs/step3.md）
 
+### 4.30 股票名称写入 + 证券列表缓存（2026-08-22）
+
+**问题（用户反馈）**：
+1. 个股分析/自选股/板块里**只有代码没有名称**
+2. 板块监控失败：暂无板块指数数据（HITHINK key / fuyao）
+
+**根因**：
+1. `sync_stock_list` 写库时 `code_name` 全为纯代码（ths tickers-list 有 name
+   但没写入）——ths_official 重建证券列表后名称丢失
+2. streamlit 进程（6103）是旧实例，启动时未加载 `/etc/mystery-web.env` 的
+   HITHINK_FINANCE_API_KEY（服务文件后来才更新 EnvironmentFile）
+
+**修复**：
+- `MarketDataClient.fetch_stock_list` 返回 `[{'code': ..., 'name': ...}]`
+  （ths name + baostock code_name 兜底）
+- `sync_stock_list` 写入 `code_name`（5147/5147 全部有名称）
+- `ThsOfficialClient.fetch_all_tickers`：
+  - 本地缓存优先（docs/tickers-cache.json，7天有效）——网络波动兜底
+  - 网络失败自动重试 2 次
+  - 成功即写缓存，下次秒回（5559只 0.8s → 0.02s）
+
+**验证**：
+- 库内名称：sh.600000→浦发银行 / sh.600004→白云机场 / ...（5147/5147）
+- fetch_all_tickers：首次 5559 只 (0.8s)，缓存秒回 (0.02s)
+- fuyao CLI index-catalog 正常（390 板块）
+
+**待用户**：`sudo systemctl restart mystery-web`（加载 HITHINK key，修复板块监控）
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

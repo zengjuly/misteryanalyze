@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -173,26 +174,65 @@ class ThsOfficialClient:
         return f"{pure}.{mkt}"
 
     # ============ 0. 全市场证券列表（ths_official 优先，docs/082201） ============
-    def fetch_all_tickers(self, refresh_cache: bool = False) -> list:
+    def fetch_all_tickers(self, refresh_cache: bool = False,
+                          use_cache: bool = True) -> list:
         """全市场 A 股证券列表（fuyao tickers-list --all，5559 只 in 2026-08）
 
         返回: [{'thscode': '600000.SH', 'ticker': '600000', 'name': '浦发银行',
                 'exchange': 'SH', 'asset_type': 'a-share', 'currency': 'CNY'}, ...]
         失败返回 []（调用方走 baostock 兜底）
+
+        稳定性: 优先读 fuyao 本地缓存 docs/tickers-cache.json（网络波动兜底），
+        缺失/过期(7天)时网络拉取；网络失败自动重试 2 次
         """
-        try:
-            args = ['tickers-list', '--all']
-            if refresh_cache:
-                args.append('--refresh-cache')
-            # tickers-list --all 输出 4 万+ 行 JSON，必须放宽超时（默认30s不够）
-            raw = self._run_fuyao(args, timeout=120)
-            if not raw:
-                logger.warning("⚠️ fuyao tickers-list 返回空（网络或额度）")
-                return []
-            return raw
-        except Exception as e:
-            logger.warning(f"⚠️ tickers-list 失败: {str(e)[:100]}")
-            return []
+        # 1. 本地缓存优先（fuyao tickers-list --refresh-cache 写入的）
+        cache_path = os.path.join(os.path.dirname(self.script_path),
+                                  '..', 'docs', 'tickers-cache.json')
+        cache_path = os.path.abspath(cache_path)
+        if use_cache and not refresh_cache:
+            try:
+                if os.path.exists(cache_path):
+                    mtime = os.path.getmtime(cache_path)
+                    if time.time() - mtime < 7 * 24 * 3600:  # 7天内
+                        with open(cache_path, encoding='utf-8') as f:
+                            data = json.load(f)
+                        if isinstance(data, list) and len(data) >= 1000:
+                            logger.info(
+                                f"📋 证券列表本地缓存: {len(data)} 只"
+                                f"（{os.path.basename(cache_path)}）")
+                            return data
+            except Exception as e:
+                logger.debug(f"证券列表缓存读取失败: {e}")
+
+        # 2. 网络拉取（失败重试 2 次，网络波动时显著提高成功率）
+        last_err = ''
+        for attempt in range(3):
+            try:
+                args = ['tickers-list', '--all']
+                if refresh_cache or attempt == 0 and not use_cache:
+                    args.append('--refresh-cache')
+                # tickers-list --all 输出 4 万+ 行 JSON，必须放宽超时（默认30s不够）
+                raw = self._run_fuyao(args, timeout=120)
+                if raw:
+                    # 成功 → 写本地缓存（下次优先读）
+                    if use_cache:
+                        try:
+                            os.makedirs(os.path.dirname(cache_path),
+                                        exist_ok=True)
+                            with open(cache_path, 'w',
+                                      encoding='utf-8') as f:
+                                json.dump(raw, f, ensure_ascii=False)
+                        except Exception as e:
+                            logger.debug(f"证券列表缓存写入失败: {e}")
+                    return raw
+                last_err = '空结果'
+            except Exception as e:
+                last_err = str(e)[:80]
+            if attempt < 2:
+                logger.warning(f"⚠️ tickers-list 第{attempt+1}次失败"
+                               f"（{last_err}），重试...")
+        logger.warning(f"⚠️ fuyao tickers-list 全部失败: {last_err}")
+        return []
 
     # ============ 1. 个股历史行情 ============
     def fetch_daily(self, stock_code: str, days: int = 1100,
