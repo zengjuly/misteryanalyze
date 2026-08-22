@@ -1898,6 +1898,32 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **提交**：perf(web): 个股分析日K只拉取一次，分析与图表共用 long_df
 
+### 4.35 财务 ths 优先 + 行业 session 缓存 + 三振传行业趋势（docs/082206.md，2026-08-22）
+
+**优化（用户方案）**，改动 3 文件：
+
+**A. data/financial_storage.py — ensure_financial 重写**
+- 缓存有效条件放宽：有 PE/PB 或报告期/ROE/EPS 即命中（ths 快照无报告期也能复用）
+- 优先 `ThsOfficialClient.valuations-snapshot`（--thscodes），全空走 baostock 兜底
+- 禁止成功路径默认 baostock.login()
+
+**B. web/pages/1_📈_个股分析.py**
+- B1: `industry_map` session 缓存（顶部构建一次，不再每票 get_industry_data）
+- B2: 所属板块展示只用 session（禁止再调 get_industry_data）
+- B3: 未命中缓存时算 `industry_trend`（板块强度 map session 缓存 + build_sector_strength_map），传入 comprehensive_signal_analysis（industry_data=None 但 industry_trend=bool）
+
+**可选加固: data/ths_client.py — fetch_financials CLI 参数**
+- 实测 CLI 是 `--thscodes`（复数）→ 改为 --thscodes，失败再试 --thscode 兼容
+- **这是财务 PE/PB 偶尔拿不到的根因**（-thscode 单数参数被 CLI 拒）
+
+**验收（全部通过）**：
+- ensure_financial('sh.600519')：走 ths，PE=19.54/PB=6.33/报告期=08-22（无 baostock login）
+- fetch_financials：600519 PE=19.54 / 302132 PE=43.79（--thscodes 生效）
+- build_sector_strength_map：118 板块得分正常
+- 页面 get_industry_data 仅 1 处（顶部 session 构建）
+
+**提交**：perf: 财务优先ths估值快照；行业map/板块强度session缓存并传入三振
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

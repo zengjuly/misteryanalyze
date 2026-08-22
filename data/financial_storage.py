@@ -136,20 +136,65 @@ class FinancialStorage:
         return not self.db.load_financial(code, limit=1).empty
 
     def ensure_financial(self, code: str, client=None) -> Dict:
-        """确保财务数据可用：无缓存时从在线源拉取并缓存（docs/ui2.md 财务展示）
-        :param code: sh.600150
-        :param client: 数据客户端（MultiSourceClient/BaostockClient，需有
-                       get_financial_data 方法；None 时尝试多源客户端）
-        :return: 最新财务 dict（{报告期/ROE/EPS/PE/PB/股息率/...}），失败返回 {}
+        """确保财务可用：优先 ThsOfficialClient.valuations-snapshot，再 baostock。
+        :param code: sh.600150 或 sh600150
+        :return: {报告期/ROE/EPS/PE/PB/股息率/...}，失败 {}
         """
         fi = self.load_latest(code)
-        # 缓存有效（报告期+核心指标有值）才复用；全 None 视为脏缓存重新拉取
-        if fi and (fi.get('报告期') or fi.get('ROE') is not None
-                   or fi.get('EPS') is not None):
+        # 有 PE/PB 或报告期/ROE/EPS 即视为有效（ths 快照无报告期）
+        if fi and (
+            fi.get('PE') is not None or fi.get('PB') is not None
+            or fi.get('报告期') or fi.get('ROE') is not None
+            or fi.get('EPS') is not None
+        ):
             return fi
+
+        code_dot = code if '.' in code else (
+            code[:2] + '.' + code[2:] if len(code) > 2 else code)
+        code_nodot = code.replace('.', '')
+
+        # ----- 1. 优先同花顺扶摇 valuations-snapshot -----
+        try:
+            import yaml
+            import os
+            from datetime import date
+            cfg_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'config', 'config.yaml')
+            with open(cfg_path, encoding='utf-8') as f:
+                cfg = yaml.safe_load(f) or {}
+            from ths_client import ThsOfficialClient
+            ths = ThsOfficialClient(cfg)
+            snap = ths.fetch_financials(code_nodot)
+            pe = snap.get('pe') or snap.get('pe_ttm')
+            pb = snap.get('pb') or snap.get('pb_mrq')
+            # 全 0 / 全空视为失败，走兜底
+            if pe or pb:
+                row = {
+                    '报告期': date.today().isoformat(),  # 估值快照日占位
+                    'PE': pe if pe else None,
+                    'PB': pb if pb else None,
+                    'ROE': snap.get('roe') or None,
+                    'EPS': None,
+                    '股息率': snap.get('dividend_yield') or None,
+                }
+                # 去掉纯 0 的 ROE/股息占位，避免污染
+                if not row.get('ROE'):
+                    row.pop('ROE', None)
+                if not row.get('股息率'):
+                    row.pop('股息率', None)
+                self.save_financial(code_dot, row)
+                latest = self.load_latest(code_dot)
+                if latest:
+                    return latest
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"⚠️ ensure_financial ths 失败({code}): {str(e)[:80]}")
+
+        # ----- 2. 兜底 MultiSourceClient / baostock（保留） -----
         try:
             if client is None:
-                # 延迟导入避免循环依赖
                 import yaml
                 import os
                 from multi_source_client import MultiSourceClient
@@ -159,27 +204,24 @@ class FinancialStorage:
                 with open(cfg_path, encoding='utf-8') as f:
                     cfg = yaml.safe_load(f)
                 client = MultiSourceClient(cfg)
-            # baostock 接口需要登录上下文（user_id），否则返回全 None
             if not getattr(client, 'login_success', False):
                 client.login()
-            code6 = code.replace('.', '')
-            # 当前股价（PE/PB/股息率计算需要，main.py 同逻辑：取日K最新收盘）
             current_price = None
             try:
-                kdf = self.db.load_kline(code, 'daily')
+                kdf = self.db.load_kline(code_dot, 'daily')
                 if kdf is not None and not kdf.empty:
                     current_price = float(kdf['close'].iloc[-1])
             except Exception:
                 pass
-            data = client.get_financial_data(code6, current_price)
+            data = client.get_financial_data(code_nodot, current_price)
             if not data:
                 return {}
-            self.save_financial(code, data)
-            return self.load_latest(code)
+            self.save_financial(code_dot, data)
+            return self.load_latest(code_dot)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
-                f"⚠️ ensure_financial({code}) 失败: {str(e)[:80]}")
+                f"⚠️ ensure_financial 兜底失败({code}): {str(e)[:80]}")
             return {}
 
     # ============ 本地数据源状态 ============

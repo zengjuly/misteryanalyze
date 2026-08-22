@@ -281,9 +281,16 @@ class ThsOfficialClient:
 
     # ============ 2. 个股财务快照 ============
     def fetch_financials(self, stock_code: str) -> dict:
-        """提取最新估值快照（PE/PB，docs/0821.md valuations-snapshot）"""
+        """提取最新估值快照（PE/PB，docs/0821.md valuations-snapshot）
+        修复（docs/082206）: CLI 参数是 --thscodes（复数），失败再试 --thscode 兼容
+        """
         ths_code = self._to_ths_code(stock_code)
-        raw = self._run_fuyao(['valuations-snapshot', '--thscode', ths_code])
+        raw = self._run_fuyao(
+            ['valuations-snapshot', '--thscodes', ths_code])
+        if not raw:
+            # 兼容旧脚本（单数参数）
+            raw = self._run_fuyao(
+                ['valuations-snapshot', '--thscode', ths_code])
         if raw:
             item = raw[0].get('item', []) if isinstance(raw[0], dict) \
                 else raw

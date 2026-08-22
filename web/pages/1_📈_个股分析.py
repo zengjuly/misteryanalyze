@@ -33,6 +33,13 @@ cfg = get_config()
 feeder = get_feeder()
 logic = get_logic()
 
+# ---------- 行业分类 session 缓存（docs/082206: 避免每票/每次 rerun 全量读） ----------
+if 'industry_map' not in st.session_state:
+    try:
+        st.session_state['industry_map'] = feeder.get_industry_data()
+    except Exception:
+        st.session_state['industry_map'] = {}
+
 # ---------- 股票代码-名称字典（模糊搜索） ----------
 if 'stock_dict' not in st.session_state:
     st.session_state['stock_dict'] = feeder.get_all_stock_code_name()
@@ -161,31 +168,45 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                         st.session_state['market_data_cache'] = \
                             feeder.get_market_index()
                 market_data = st.session_state['market_data_cache']
+                # 行业趋势：优先板块强度 map（session/模块缓存），否则仅 bool 缺失
+                # （docs/082206: 有板块名时应尽力算 bool，不双空）
+                industry_trend = None
+                industry_data = None
+                try:
+                    ind_map = st.session_state.get('industry_map') or {}
+                    cm = ind_map.get('code_map') or {}
+                    ind_name = cm.get(db_code) or cm.get(code)
+                    if ind_name:
+                        from web.pages_util import build_sector_strength_map
+                        if 'sector_strength_map' not in st.session_state:
+                            st.session_state['sector_strength_map'] = \
+                                build_sector_strength_map()
+                        smap = st.session_state['sector_strength_map'] or {}
+                        score = smap.get(ind_name)
+                        if score is not None:
+                            # 与板块监控同一套得分：>0 视为向上
+                            industry_trend = bool(float(score) > 0)
+                except Exception:
+                    industry_trend = None
+
                 signal = logic.comprehensive_signal_analysis(
                     daily, weekly_data=weekly, market_data=market_data,
-                    industry_data=None, industry_trend=None)
+                    industry_data=industry_data,
+                    industry_trend=industry_trend)
                 db.set_analysis_cache(db_code, 'daily', last_date,
                                       {'signal': signal})
 
             st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
 
-            # 所属板块（docs/082203 §6.3 多板块展示）
-            industry_display = '未知'
-            try:
-                ind_map = feeder.get_industry_data()
-                multi = ind_map.get('multi_map') or {}
-                db_code = code[:2] + '.' + code[2:] if '.' not in code else code
-                blocks = (multi.get(db_code) or multi.get(code)
-                          or multi.get(code.replace('.', '')))
-                if not blocks:
-                    cm = ind_map.get('code_map') or {}
-                    one = (cm.get(db_code) or cm.get(code)
-                           or cm.get(code.replace('.', '')))
-                    blocks = [one] if one and str(one) not in ('', '未知', 'nan') else []
-                if blocks:
-                    industry_display = '、'.join(str(b) for b in blocks if b)
-            except Exception:
-                pass
+            # 所属板块（docs/082206: 只用 session，禁止再调 get_industry_data()）
+            ind_map = st.session_state.get('industry_map') or {}
+            cm = ind_map.get('code_map') or {}
+            multi = ind_map.get('multi_map') or {}
+            blocks = multi.get(db_code) or multi.get(code)
+            if blocks:
+                industry_display = '、'.join(str(b) for b in blocks if b)
+            else:
+                industry_display = cm.get(db_code) or cm.get(code) or '未知'
             st.info(f"🏢 所属板块: **{industry_display}**")
 
             # ---------- 1. 评分卡片 ----------
