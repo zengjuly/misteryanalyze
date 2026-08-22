@@ -56,7 +56,7 @@ class ThsOfficialClient:
         """index-catalog 一次拉取，进程内缓存。返回 [{thscode, name}, ...]"""
         if self._index_catalog_cache is not None and not force:
             return self._index_catalog_cache
-        raw = self._run_fuyao(['index-catalog'])
+        raw = self._run_fuyao(['index-catalog', '--tag', 'industry'])
         out = []
         name_map = {}
         for cat in (raw or []):

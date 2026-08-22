@@ -1873,6 +1873,31 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 - get_market_index：46s → **0.31s（150倍）**，指数数据最新交易日
 - db 缓存已更新：上证 1100 行 / 深成 1200 / 创业板 1200（均 08-21）
 
+### 4.34 个股分析日K只拉一次（docs/082205.md，2026-08-22）
+
+**优化（用户方案）**：`web/pages/1_📈_个股分析.py` 日K**只拉一次**——
+长窗口（4年）一次拉取，分析与图表共用同一 DataFrame
+
+**问题**：原代码拉取 2 次
+- 入口 `daily = feeder.get_daily(code)`（短窗口默认）
+- K线图段 `long_df = feeder.get_daily(code, start_date=start4y)`（4年长窗口）
+- 两次可能都走网络/缓存，重复
+
+**改法（定点替换）**：
+1. 入口：`daily = feeder.get_daily(code)` → 一次长窗口
+   `long_df = feeder.get_daily(code, start_date=start4y)` + session 复用
+   （`kline_long_{code}`），empty 时 fallback 无参再试一次；`daily = long_df`
+2. K线段：删除第二段拉取，直接
+   `long_df = st.session_state.get(f'kline_long_{code}', daily)`
+3. 周/月箱体重采样 `rs.resample(daily, ...)` 不变（不再拉数）
+
+**验收（全部通过）**：
+- `feeder.get_daily` 全文件仅 2 处（133 主路径 + 136 empty fallback）✓
+- K线上方 0 次 get_daily ✓
+- 手动：sz302132 长窗口 0.92s（959行，08-21），分析+图表+周月K总耗时 0.96s ✓
+
+**提交**：perf(web): 个股分析日K只拉取一次，分析与图表共用 long_df
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

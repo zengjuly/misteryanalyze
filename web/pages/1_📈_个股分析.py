@@ -122,11 +122,28 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
     with st.spinner(f"正在分析 {code} {name} ..."):
         try:
             from db_manager import MysteryDB
+            from datetime import datetime, timedelta
             db = MysteryDB()
-            daily = feeder.get_daily(code)
-            if daily is None or daily.empty:
+
+# ===== 日 K 只拉一次：长窗口，分析与图表共用（docs/082205.md） =====
+            kkey = f'kline_long_{code}'
+            if kkey not in st.session_state:
+                start4y = (datetime.now() - timedelta(days=365 * 4)
+                           ).strftime('%Y-%m-%d')
+                long_df = feeder.get_daily(code, start_date=start4y)
+                if long_df is None or long_df.empty:
+                    # 无 start_date 再试一次（兼容部分源忽略 start_date）
+                    long_df = feeder.get_daily(code)
+                if long_df is not None and not long_df.empty:
+                    st.session_state[kkey] = long_df
+            long_df = st.session_state.get(kkey)
+
+            if long_df is None or long_df.empty:
                 st.error(f"❌ 无法获取 {code} 行情数据")
                 st.stop()
+
+            # 分析用同一 DataFrame（指标已在 get_daily 内附带 MA）
+            daily = long_df
             last_date = str(daily['日期'].max())[:10]
 
             # ===== 分析结果缓存（docs/ui2.md 二级缓存） =====
@@ -380,17 +397,8 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             st.subheader("📊 K线图（1000交易日 + MA377/610 + EMA20，日/周/月一次完成）")
             from indicators.ma_indicators import MAIndicators
 
-            # 长历史K线（1000交易日；缓存不足时在线源拉取，会话内复用）
-            kkey = f'kline_long_{code}'
-            if kkey not in st.session_state:
-                from datetime import datetime, timedelta
-                start4y = (datetime.now() - timedelta(days=365 * 4)
-                           ).strftime('%Y-%m-%d')
-                long_df = feeder.get_daily(code, start_date=start4y)
-                if long_df is None or long_df.empty:
-                    long_df = daily
-                st.session_state[kkey] = long_df
-            long_df = st.session_state[kkey]
+            # long_df 已在分析入口拉取并写入 session，此处直接使用（docs/082205.md）
+            long_df = st.session_state.get(f'kline_long_{code}', daily)
 
             def _prep_kline(kdf, box_dict, max_bars=1000):
                 """补 MA377/610 + EMA20 后绘制（docs/081601.md）"""
