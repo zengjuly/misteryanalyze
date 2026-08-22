@@ -1995,6 +1995,32 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **提交**：feat: 单票 analyze_one_stock 统一 Web/daily；展示板块涨跌与主升浪/平台全字段
 
+### 4.39 主升浪 8 项固定展示 + 周/月K不重跑分析（docs/082210.md，2026-08-22）
+
+**问题（用户反馈）**：切周/月周期触发全量重分析（根因：全部结果写在
+`if st.button(...)` 内，切 Tab/Radio rerun 时 button=False 整块不渲染）
+
+**修复（§2 架构拆分）**：
+- button 只触发计算 → 写 `st.session_state['stock_analysis']` → `st.stop()`
+- 展示区独立：`ctx = session_state.get('stock_analysis')` → `_render_report(ctx)`
+- 展示段（评分/财务/明细/K线）抽为 `def _render_report(ctx)` 函数
+- 切周/月 radio → button=False → 直接走 ctx 渲染（不再 get_daily/signal）
+
+**§3 K线**：radio 懒加载在函数内（切周期仅重绘，不重算）
+**§4 主升浪 8 项**：固定 CHECK_KEYS 8 键 + bool 值 ✅/❌ + 详情对齐展示
+
+**关键实现细节**：
+- 展示段 dedent 移入函数（12空格公共缩进 → textwrap.dedent）
+- `_render_report` 内补 `db = MysteryDB()`（财务段依赖）
+- button try 的 except 闭合（st.stop() 后）
+
+**验收（全部通过）**：
+- session 写入/ctx 读取/展示函数/radio/8项固定键/无 st.tabs ✓
+- checklist 8 键 bool 全存在 + 详情 8 条 ✓
+- 语法 OK
+
+**提交**：fix(web): 分析结果入session，K线周期切换不重跑分析；8项按固定键展示
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
