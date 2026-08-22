@@ -28,22 +28,32 @@ class TdxApiClient:
                     period: str = 'daily') -> pd.DataFrame:
         """从本地 tdx-api 容器拉取日K并统一为中文列（price×1000 → 元）
         接口要求带交易所前缀大写代码（SZ000001/SH600519）——修复: 原来传纯数字
+        指数走 /api/index（sh000001/sz399001 小写前缀），股票走 /api/kline-all
         """
         pure = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
         mkt = 'SH' if stock_code.startswith('sh') else (
             'SZ' if stock_code.startswith('sz') else 'BJ')
         api_code = f"{mkt}{pure}"
+        # 指数判定（sh000xxx/sz399xxx/bj899xxx）→ /api/index 接口
+        _is_idx = (
+            (stock_code.startswith('sh') and pure.startswith('000'))
+            or (stock_code.startswith('sz') and pure.startswith('399'))
+            or (stock_code.startswith('bj') and pure.startswith('899'))
+        )
+        endpoint = 'index' if _is_idx else 'kline-all'
         try:
             import requests
             res = requests.get(
-                f"{self.api_url}/kline-all",
+                f"{self.api_url}/{endpoint}",
                 params={'code': api_code, 'type': 'day'},
                 timeout=self.timeout).json()
         except Exception as e:
             logger.debug(f"tdx-api 请求异常 [{stock_code}]: {str(e)[:80]}")
             return pd.DataFrame()
         data = (res or {}).get('data', {}) if isinstance(res, dict) else {}
-        items = data.get('list', []) if isinstance(data, dict) else []
+        # 兼容 /api/kline-all（list）与 /api/index（List，大写 L）
+        items = (data.get('list') if isinstance(data, dict) else None) \
+            or (data.get('List') if isinstance(data, dict) else None) or []
         if not items:
             return pd.DataFrame()
         df = pd.DataFrame(items)

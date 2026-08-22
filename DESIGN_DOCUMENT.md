@@ -1853,6 +1853,26 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 **备注**：指数数据滞后 1-3 天来自 TDX 本地文件（通达信未同步 08-21），
 对趋势/均线判断无实质影响；在线源（ths）指数可用时会自动更新
 
+### 4.33 tdx-api 指数接口 /api/index（2026-08-22，用户提供接口文档）
+
+**问题（用户提供 API 文档）**：tdx-api 容器**支持指数**——`GET /api/index`
+（之前误判"不支持"：试错接口 kline-all 传 SZ399001）
+
+**接口文档（github.com/oficcejo/tdx-api）**：
+- `GET /api/kline-all?code=SH600519&type=day` 股票全历史K线
+- `GET /api/index?code=sh000001&type=day` 指数K线（上证/深证）
+- 返回 `data.List`（大写 L），价格 ×1000
+
+**修复（tdx_api_client.fetch_daily）**：
+1. 指数（sh000xxx/sz399xxx/bj899xxx）→ `/api/index` 接口
+2. code 格式：指数用小写前缀 `sh000001`，股票用大写 `SH600519`
+3. 解析兼容 `data.List`（大写 L，index 返回）与 `data.list`（kline-all）
+
+**效果**：
+- tdx-api 指数拉取成功（100 行，**最新 08-21**——比 TDX 本地文件 08-20 新）
+- get_market_index：46s → **0.31s（150倍）**，指数数据最新交易日
+- db 缓存已更新：上证 1100 行 / 深成 1200 / 创业板 1200（均 08-21）
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
