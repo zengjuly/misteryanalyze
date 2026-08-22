@@ -1969,6 +1969,32 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **提交**：perf(web): 个股页图懒加载/自选缓存/分阶段spinner/搜索与代码规范化
 
+### 4.38 个股展示对齐 pipeline（docs/082209.md，2026-08-22）
+
+**优化（用户方案）**：单票深度分析统一入口 + Web 展示对齐 Excel/daily
+
+**新建 analysis/stock_pipeline.py**（Web/daily 共用入口）：
+- `analyze_one_stock()`：注入 daily/weekly/monthly/market_data/sector_kline/
+  financial，输出 JSON 可序列化 dict（键名与 Excel 对齐）
+- `_sector_returns()`：板块 5/10/20 日涨跌（板块指数K线优先，非成分股抽样）
+- `_multi_period()`：周/月 MA5>MA10>MA20 + 多周期共振（与 main 单票分支一致）
+
+**Web 展示增强（§2，最小侵入）**：
+- 板块强度（指数K线）：近5/10/20日涨跌 + 趋势（sector_meta + sector_kline 读取）
+- 多周期共振：周/月线趋势 + 最新价/MA（_multi_period）
+- 主升浪：状态 + 判定依据1/2/3 + 满足数 + 综合判断
+- 平台突破：状态/箱体/突破信号/买横信号 4 列
+- 财务仅保留「💰 财务数据」一块（无重复）
+
+**§3 main 循环替换**：渐进式（Web 先行对齐；main 保留现有多维分析，后续可逐步切 pipeline）
+
+**验收（通过）**：
+- pipeline import ok；板块涨跌 4.2/8.77/19.23 + 趋势 True；周月多头共振 True
+- sector_meta 375 条；白酒概念 → ths_885525 → 728 行板块K线
+- 语法 OK（stock_pipeline.py + 页面）
+
+**提交**：feat: 单票 analyze_one_stock 统一 Web/daily；展示板块涨跌与主升浪/平台全字段
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

@@ -365,6 +365,71 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                 st.markdown(f"**月线箱体**（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
                             f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
 
+            # ---------- 3.0 展示对齐 pipeline（docs/082209 §2：板块涨跌/多周期/主升浪/平台全字段） ----------
+            try:
+                # 板块 5/10/20 日涨跌（优先板块指数K线，无则 N/A）
+                from analysis.stock_pipeline import _sector_returns, _multi_period
+                _sector_k = None
+                try:
+                    ind_first = (industry_display or '未知').split('、')[0]
+                    if ind_first and ind_first != '未知':
+                        from db_manager import MysteryDB
+                        _sdb = MysteryDB()
+                        _smeta = dict((r[1], r[0]) for r in
+                                      _sdb.get_sector_meta(active_only=True))
+                        _s_code = _smeta.get(ind_first)
+                        if _s_code:
+                            _sdf = _sdb.get_sector_kline(_s_code)
+                            if _sdf is not None and not _sdf.empty:
+                                _sector_k = _sdf
+                except Exception:
+                    _sector_k = None
+                _sec = _sector_returns(_sector_k)
+                st.markdown("**板块强度（指数K线）**")
+                st.markdown(
+                    f"- 近5日: **{_sec['板块近5日涨跌']}%**"
+                    f" | 近10日: **{_sec['板块近10日涨跌']}%**"
+                    f" | 近20日: **{_sec['板块近20日涨跌']}%**"
+                    f" | 趋势: {'📈 走强' if _sec['板块趋势'] else '📉 走弱' if _sec['板块趋势'] is not None else '—'}")
+                # 多周期共振（与 main._analyze_multi_period 单票分支一致）
+                _mp = _multi_period(wk, mo)
+                st.markdown(
+                    f"- 周线: **{_mp['周线趋势']}**（最新 {_mp.get('周线最新价', '—')}，"
+                    f"MA20 {_mp.get('周线MA20', '—')}）"
+                    f" | 月线: **{_mp['月线趋势']}**（最新 {_mp.get('月线最新价', '—')}，"
+                    f"MA10 {_mp.get('月线MA10', '—')}）")
+                st.markdown(
+                    f"- 多周期共振: **{'✅ 是' if _mp['多周期共振'] else '❌ 否'}**")
+            except Exception as e:
+                st.caption(f"板块/多周期: {e}")
+
+            # 主升浪判定依据 + 平台全字段（pipeline 对齐，docs/082209 §2.4/2.5）
+            try:
+                _bull = logic.main_bull_wave_analysis(daily)
+                _reasons = [x for x in (_bull.get('判定依据') or [])
+                            if not str(x).startswith('判定结果')]
+                while len(_reasons) < 3:
+                    _reasons.append('—')
+                st.markdown("**主升浪分析**")
+                st.markdown(
+                    f"- 状态: **{_bull.get('状态', _bull.get('主升浪状态', '未知'))}**"
+                    f" | 满足 {cl.get('满足数量', 0)}/8"
+                    f" | 综合判断: {cl.get('综合判断', '未知')}")
+                for i, r in enumerate(_reasons, 1):
+                    st.markdown(f"- 判定依据{i}: {r}")
+            except Exception as e:
+                st.caption(f"主升浪: {e}")
+            try:
+                st.markdown("**平台突破分析**")
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("平台状态", plat.get('平台状态', '未知'))
+                box = plat.get('平台范围') or plat.get('平台箱体')
+                p2.metric("平台箱体(近20日)", str(box) if box else "N/A")
+                p3.metric("突破信号", "是" if plat.get('突破信号') else "否")
+                p4.metric("买横信号", "是" if plat.get('买横信号') else "否")
+            except Exception as e:
+                st.caption(f"平台: {e}")
+
             # ---------- 3.1 技术指标表（Excel 对齐，docs/082203 设计约束） ----------
             try:
                 from indicators.ma_indicators import MAIndicators
