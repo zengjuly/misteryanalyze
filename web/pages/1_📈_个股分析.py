@@ -251,6 +251,131 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                 st.markdown(f"**月线箱体**（近12月）: {m_lo:.2f} ~ {m_hi:.2f} "
                             f"| 最新 {mo['收盘价'].iloc[-1]:.2f}")
 
+            # ---------- 3.1 技术指标表（Excel 对齐，docs/082203 设计约束） ----------
+            try:
+                from indicators.ma_indicators import MAIndicators
+                from indicators.trend_indicators import TrendIndicators
+                from indicators.momentum_indicators import MomentumIndicators
+                ti = daily.copy()
+                ti = MAIndicators().calculate_ma(ti)
+                ti = TrendIndicators().calculate_macd(ti)
+                ti = TrendIndicators().calculate_rsi(ti)
+                ti = MomentumIndicators().calculate_volume_ratio(ti)
+                last = ti.iloc[-1]
+                ind_rows = [
+                    ('最新价', round(float(last['收盘价']), 2)),
+                    ('MA5', round(float(last.get('MA5', 0)), 2)),
+                    ('MA10', round(float(last.get('MA10', 0)), 2)),
+                    ('MA20', round(float(last.get('MA20', 0)), 2)),
+                    ('MA60', round(float(last.get('MA60', 0)), 2)),
+                    ('MA250', round(float(last.get('MA250', 0)), 2)
+                     if pd.notna(last.get('MA250')) else None),
+                    ('量比', round(float(last.get('量比', 0)), 2)),
+                    ('RSI', round(float(last.get('RSI', 0)), 2)),
+                    ('MACD', round(float(last.get('MACD', 0)), 2)),
+                    ('MACD_Signal', round(float(last.get(
+                        'MACD_Signal', 0)), 2)),
+                    ('换手率', round(float(last.get('换手率', 0) or 0), 2)),
+                ]
+                st.markdown(f"**技术指标（最新交易日 {last_date}）**")
+                st.dataframe(pd.DataFrame(
+                    [{'指标': k, '数值': v} for k, v in ind_rows]),
+                    width="stretch", height=min(len(ind_rows) * 35 + 40, 420))
+            except Exception as e:
+                st.caption(f"技术指标表: {e}")
+
+            # ---------- 3.2 财务指标表（Excel 对齐） ----------
+            try:
+                from data.financial_storage import FinancialStorage
+                fin = FinancialStorage(MysteryDB()).ensure_financial(code)
+                if not fin or not any(fin.get(k) for k in
+                                      ('pe', 'pb', 'roe')):
+                    # 兜底：同花顺估值快照（PE/PB 实时）
+                    from data.ths_client import ThsOfficialClient
+                    fin2 = ThsOfficialClient(cfg).fetch_financials(code)
+                    fin = {**fin, 'pe': fin.get('pe') or fin2.get('pe'),
+                           'pb': fin.get('pb') or fin2.get('pb')}
+                def _fmt(v):
+                    return '—' if v is None else (round(float(v), 2)
+                                                  if isinstance(v, (int, float)) else v)
+                fin_rows = [
+                    ('ROE', _fmt(fin.get('roe'))),
+                    ('EPS', _fmt(fin.get('eps'))),
+                    ('PE', _fmt(fin.get('pe'))),
+                    ('PB', _fmt(fin.get('pb'))),
+                    ('股息率%', _fmt(fin.get('dividend_yield'))),
+                    ('报告期', fin.get('report_date') or
+                     fin.get('报告期') or '—'),
+                ]
+                st.markdown("**财务指标**")
+                st.dataframe(pd.DataFrame(
+                    [{'指标': k, '数值': v} for k, v in fin_rows]),
+                    width="stretch", height=260)
+            except Exception as e:
+                st.caption(f"财务指标: {e}")
+
+            # ---------- 3.3 三振共振 + 基础过滤详情（Excel 对齐） ----------
+            st.markdown("**三振共振分析**")
+            st.markdown(
+                f"- 共振级别: **{signal.get('共振级别', '无共振')}**"
+                f" | 共振评分: {signal.get('共振评分', 0)}"
+                f" | 真三振: {'✅' if signal.get('真三振') else '❌'}")
+            st.markdown(
+                f"- 个股趋势: **{signal.get('个股趋势', '未知')}**"
+                f" | 行业趋势: **{signal.get('行业趋势', '未知')}**"
+                f" | 大盘趋势: **{signal.get('大盘趋势', '未知')}**")
+            st.markdown("**基础过滤（年线滤网）**")
+            st.markdown(
+                f"- 年线滤网: {'✅ 通过' if signal.get('年线滤网') else '❌ 未通过'}"
+                f" | 周线锚定: {'✅' if signal.get('周线锚定') else '❌'}"
+                f" | 破五反五: {signal.get('破五反五', '未知')}")
+
+            # ---------- 3.4 多周期分析详情（Excel 对齐） ----------
+            st.markdown("**多周期分析**")
+            try:
+                w_close = float(wk['收盘价'].iloc[-1]) if wk is not None \
+                    and len(wk) else None
+                w_ma5 = float(wk['收盘价'].tail(5).mean()) if wk is not None \
+                    and len(wk) else None
+                w_ma10 = float(wk['收盘价'].tail(10).mean()) if wk is not None \
+                    and len(wk) else None
+                w_ma20 = float(wk['收盘价'].tail(20).mean()) if wk is not None \
+                    and len(wk) else None
+                if wk is not None and len(wk) >= 20:
+                    if w_ma5 > w_ma10 > w_ma20 and w_close > w_ma20:
+                        w_trend = '多头排列'
+                    elif w_ma5 < w_ma10 < w_ma20:
+                        w_trend = '空头排列'
+                    else:
+                        w_trend = '震荡整理'
+                else:
+                    w_trend = '数据不足'
+                m_close = float(mo['收盘价'].iloc[-1]) if mo is not None \
+                    and len(mo) else None
+                m_ma5 = float(mo['收盘价'].tail(5).mean()) if mo is not None \
+                    and len(mo) else None
+                m_ma10 = float(mo['收盘价'].tail(10).mean()) if mo is not None \
+                    and len(mo) else None
+                if mo is not None and len(mo) >= 10:
+                    if m_ma5 > m_ma10 and m_close > m_ma10:
+                        m_trend = '多头排列'
+                    elif m_ma5 < m_ma10:
+                        m_trend = '空头排列'
+                    else:
+                        m_trend = '震荡整理'
+                else:
+                    m_trend = '数据不足'
+                st.markdown(
+                    f"- 周线: **{w_trend}**（最新 {w_close:.2f}，"
+                    f"MA20 {w_ma20:.2f}）" if w_close is not None
+                    else "- 周线: 数据不足")
+                st.markdown(
+                    f"- 月线: **{m_trend}**（最新 {m_close:.2f}，"
+                    f"MA10 {m_ma10:.2f}）" if m_close is not None
+                    else "- 月线: 数据不足")
+            except Exception as e:
+                st.caption(f"多周期: {e}")
+
             # ---------- 4. K线图（最近1000交易日 + MA377/610 + EMA20，docs/081601.md） ----------
             st.subheader("📊 K线图（1000交易日 + MA377/610 + EMA20，日/周/月一次完成）")
             from indicators.ma_indicators import MAIndicators
