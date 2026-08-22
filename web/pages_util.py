@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# pages_util.py - Web 页面与扫描共用工具（docs/081601.md 扫描使能三振）
-"""板块强度计算（从页面2 提取，供全市场扫描三振判定复用）
-得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3（docs/ui2.md）
+# pages_util.py - Web 页面与扫描共用工具
+"""板块强度：Financial-API 官方板块指数日K（禁止成分股抽样，docs/082203 §4）
+得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3
 """
 import logging
 import os
@@ -9,86 +9,82 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), 'data'))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in [_ROOT, os.path.join(_ROOT, 'data'), os.path.join(_ROOT, 'utils')]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-# 板块强度模块级缓存（TTL 30 分钟，避免每次扫描/页面重复计算 83×30 次查询）
 _strength_cache = {'ts': 0.0, 'rows': []}
 _CACHE_TTL = 1800
 
 
 def calc_sector_strength(use_cache: bool = True) -> list:
-    """板块强度计算（行业分类 + 缓存K线），返回 [{板块, 板块得分, ...}]
-    :param use_cache: 30 分钟内复用缓存（docs/081601.md 扫描前置构建一次）
+    """基于 index-historical 板块指数K线计算强度，禁止个股抽样/全量。
+    得分 = MA20偏离×0.4 + 近10日涨幅×0.3 + 成交额放大×0.3
     """
     import time
     if use_cache and _strength_cache['rows'] \
             and time.time() - _strength_cache['ts'] < _CACHE_TTL:
         return _strength_cache['rows']
     try:
-        from utils.data_feeder import DataFeeder
         import yaml
-        cfg = yaml.safe_load(open(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'config', 'config.yaml')))
-        feeder = DataFeeder(cfg)
-        ind = feeder.get_industry_data()
-        industry_codes = ind.get('industry_codes', {})
-        if not industry_codes:
+        cfg_path = os.path.join(_ROOT, 'config', 'config.yaml')
+        with open(cfg_path, encoding='utf-8') as f:
+            cfg = yaml.safe_load(f) or {}
+        from ths_client import ThsOfficialClient
+        client = ThsOfficialClient(cfg)
+        catalog = client.get_index_catalog()
+        if not catalog:
+            logger.warning('⚠️ index-catalog 为空，板块强度无法计算')
             return []
-        from db_manager import MysteryDB
-        db = MysteryDB()
+        max_sectors = int((cfg.get('sector') or {}).get('max_sectors', 120))
         rows = []
-        for industry, codes in industry_codes.items():
-            if len(codes) < 3:
+        for cat in catalog[:max_sectors]:
+            name = cat.get('name')
+            code = cat.get('thscode')
+            if not name or not code:
                 continue
-            ma20_dev, chg10, amt_up, n = [], [], [], 0
-            for c in codes[:10]:  # 每板块最多抽样10只（性能：83×10=830次）
-                try:
-                    # 日期限制: 近60天数据即可算 MA20/10日涨幅/成交额
-                    from datetime import datetime, timedelta
-                    start = (datetime.now() - timedelta(days=60)
-                             ).strftime('%Y-%m-%d')
-                    kdf = db.load_kline(c, 'daily', start_date=start)
-                    if kdf is None or len(kdf) < 20:
-                        continue
-                    close = kdf['close'].astype(float)
-                    last = close.iloc[-1]
-                    ma20 = close.tail(20).mean()
-                    dev = (last / ma20 - 1) * 100 if ma20 else 0
-                    c10 = (last / close.iloc[-11] - 1) * 100 \
-                        if len(close) > 11 else 0
-                    amt = kdf['amount'].astype(float).tail(5).mean() \
-                        if 'amount' in kdf.columns else 0
-                    amt_prev = kdf['amount'].astype(float).tail(20).head(15)\
-                        .mean() if 'amount' in kdf.columns else 0
-                    ma20_dev.append(dev)
-                    chg10.append(c10)
-                    amt_up.append(1 if (amt and amt_prev and amt > amt_prev * 1.1)
-                                  else 0)
-                    n += 1
-                except Exception:
+            try:
+                kdf = client.fetch_block_daily_by_code(code, days=90)
+                if kdf is None or len(kdf) < 20:
                     continue
-            if n < 3:
+                close = kdf['收盘价'].astype(float)
+                last = float(close.iloc[-1])
+                ma20 = float(close.tail(20).mean())
+                if ma20 <= 0:
+                    continue
+                bias = (last / ma20 - 1) * 100
+                chg10 = 0.0
+                if len(close) > 11:
+                    past = float(close.iloc[-11])
+                    if past > 0:
+                        chg10 = (last / past - 1) * 100
+                amt_ratio = 1.0
+                if '成交额' in kdf.columns:
+                    a5 = float(kdf['成交额'].tail(5).mean() or 0)
+                    a15 = float(kdf['成交额'].tail(20).head(15).mean() or 0)
+                    if a15 > 0:
+                        amt_ratio = a5 / a15
+                score = bias * 0.4 + chg10 * 0.3 + (amt_ratio - 1) * 100 * 0.3
+                rows.append({
+                    '板块': name,
+                    '板块代码': code,
+                    'MA20偏离%': round(bias, 2),
+                    '近10日涨幅%': round(chg10, 2),
+                    '成交额放大': round(amt_ratio, 2),
+                    '板块得分': round(float(score), 2),
+                })
+            except Exception:
                 continue
-            score = (sum(ma20_dev) / n) * 0.4 + \
-                    (sum(chg10) / n) * 0.3 + \
-                    (sum(amt_up) / n) * 100 * 0.3
-            rows.append({'板块': industry, '成分股数': len(codes),
-                         '样本数': n, 'MA20偏离%': round(sum(ma20_dev) / n, 2),
-                         '近10日涨幅%': round(sum(chg10) / n, 2),
-                         '成交额放大': round(sum(amt_up) / n * 100, 1),
-                         '板块得分': round(score, 2)})
         rows.sort(key=lambda r: r['板块得分'], reverse=True)
         _strength_cache['ts'] = time.time()
         _strength_cache['rows'] = rows
         return rows
     except Exception as e:
-        logger.warning(f"⚠️ 板块强度计算失败: {e}")
+        logger.warning(f'⚠️ 板块强度计算失败: {e}')
         return []
 
 
 def build_sector_strength_map() -> dict:
-    """板块得分 map: {板块名: 得分}（供三振行业趋势判定）"""
+    """板块得分 map: {板块名: 得分}（docs/081601.md 扫描三振前置）"""
     return {r['板块']: r['板块得分'] for r in calc_sector_strength()}

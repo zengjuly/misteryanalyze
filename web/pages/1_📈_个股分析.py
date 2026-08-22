@@ -101,7 +101,23 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
     if not code:
         st.warning("无法解析股票代码")
         st.stop()
-    name = stock_dict.get(code, code)
+
+    # 统一无点格式 + 名称解析（docs/082203 §6.1 修复 sh.600984 sh.600984）
+    code = code.replace('.', '').strip()
+    name = stock_dict.get(code, '')
+    if not name:
+        try:
+            from db_manager import MysteryDB
+            info = MysteryDB().get_stock_info(limit=None)
+            if info is not None and not info.empty and 'code_name' in info.columns:
+                for c, n in zip(info['code'], info['code_name']):
+                    if str(c).replace('.', '') == code and n and str(n) != 'nan':
+                        name = str(n)
+                        break
+        except Exception:
+            pass
+    if not name:
+        name = code
 
     with st.spinner(f"正在分析 {code} {name} ..."):
         try:
@@ -136,15 +152,24 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
 
             st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
 
-            # 所属板块（docs/ui2.md: 支持分析板块）
-            industry_name = '未知'
+            # 所属板块（docs/082203 §6.3 多板块展示）
+            industry_display = '未知'
             try:
                 ind_map = feeder.get_industry_data()
-                cm = ind_map.get('code_map', {})
-                industry_name = cm.get(db_code, cm.get(code, '未知'))
+                multi = ind_map.get('multi_map') or {}
+                db_code = code[:2] + '.' + code[2:] if '.' not in code else code
+                blocks = (multi.get(db_code) or multi.get(code)
+                          or multi.get(code.replace('.', '')))
+                if not blocks:
+                    cm = ind_map.get('code_map') or {}
+                    one = (cm.get(db_code) or cm.get(code)
+                           or cm.get(code.replace('.', '')))
+                    blocks = [one] if one and str(one) not in ('', '未知', 'nan') else []
+                if blocks:
+                    industry_display = '、'.join(str(b) for b in blocks if b)
             except Exception:
                 pass
-            st.info(f"🏢 所属板块: **{industry_name}**")
+            st.info(f"🏢 所属板块: **{industry_display}**")
 
             # ---------- 1. 评分卡片 ----------
             st.subheader("🎯 评分概览")
@@ -297,18 +322,7 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             for d in signal.get('详情', []):
                 st.markdown(f"- {d}")
 
-            # ---------- 6. 最近20日数据 ----------
-            st.subheader("🗓️ 最近20个交易日数据")
-            tail = daily.tail(20).copy()
-            tail['日期'] = tail['日期'].astype(str)
-            show_cols = ['日期', '收盘价', '开盘价', '最高价', '最低价',
-                         '成交量', '换手率']
-            show_cols = [c for c in show_cols if c in tail.columns]
-            st.dataframe(tail[show_cols].round(3), width="stretch")
-            st.download_button("📥 导出CSV",
-                               tail[show_cols].to_csv(index=False).encode('utf-8-sig'),
-                               f"{code}_daily.csv", "text/csv")
-            # 分析结果 Excel（信号摘要 + 最近20日）
+            # ---------- 6. 导出信号摘要（docs/082203 §6.2 无最近20日表） ----------
             try:
                 from web.utils.download import excel_download_button
                 sig_row = {
@@ -326,13 +340,12 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                     '主升浪判断': cl.get('综合判断', ''),
                 }
                 excel_download_button(
-                    tail[show_cols].round(3),
+                    pd.DataFrame([sig_row]),
                     f"{code}_{name}_分析结果_{date.today()}.xlsx",
                     button_label="📥 导出分析结果 Excel",
-                    sheet_name='最近20日',
-                    sheets={'信号摘要': pd.DataFrame([sig_row])},
+                    sheet_name='信号摘要',
                     key=f"export_analysis_{code}",
-                    help="多 sheet: 最近20日K线 / 信号摘要")
+                    help="信号摘要")
             except Exception as ex:
                 st.caption(f"Excel导出不可用: {ex}")
         except Exception as e:

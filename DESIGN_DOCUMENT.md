@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **项目名称**: Mystery趋势交易分析系统
-- **版本**: 1.21.0
+- **版本**: 1.22.0
 - **创建日期**: 2026-08-09
 - **更新日期**: 2026-08-22
 - **文档类型**: 系统设计文档
@@ -1667,6 +1667,47 @@ MARKETDB_DB_PATH 优先）
 
 **后续**：三振 industry_trend 可挂载 sector_kline（calculate_industry_score_
 from_sector 已就绪）；板块监控页可直连真实指数
+
+### 4.26 板块强度指数化 + 页面修复（docs/082203.md + 082204.md，v1.22.0，2026-08-22）
+
+**总原则**：板块强度**只用 Financial-API 板块指数日K**（index-historical）；
+成分股接口仅用于钻取，不参与得分；不调大模型；不新增依赖。
+
+**ths_client.py（§2）**：
+- `get_index_catalog(force)`：index-catalog 一次拉取 + 进程内缓存
+  （_index_catalog_cache / _index_name_to_code）
+- `fetch_block_daily_by_code(thscode)`：index-historical 直连（不扫目录）；
+  fetch_index_hist 保留为兼容别名
+- `fetch_block_daily`：用缓存目录解析名称（删除内部每次 catalog 全量扫描）
+- `fetch_constituents_by_code`：成分股 → 无点代码列表（钻取用）
+- fetch_block_info 改用缓存目录
+
+**market_data_client.py（§3/§6）**：
+- `get_block_kline(block_name/sector_code)`：板块指数日K统一入口，
+  **禁止回退个股抽样**（ths_official → 后续源）
+- `list_sector_catalog()`：板块目录透出
+
+**web/pages_util.py（§4 全量重写 calc_sector_strength）**：
+- **删除**成分股循环/`codes[:10]`/样本数逻辑 → 直接 index-historical
+  板块指数日K（days=90）计算：MA20偏离×0.4 + 近10日涨幅×0.3 +
+  成交额放大×0.3；max_sectors 可配置（默认 120）；缓存 TTL 1800s
+
+**web/pages/2_📊_板块监控.py（§5 整文件覆盖）**：
+- 删除本地 @st.cache_data 抽样函数 → 用 web.pages_util.calc_sector_strength
+- 表格列：板块/板块代码/MA20偏离%/近10日涨幅%/成交额放大/板块得分
+  （**无样本数/成分股数列**）；成分股钻取与强度分离（selectbox + 钻取按钮）
+
+**web/pages/1_📈_个股分析.py（§6 定点替换）**：
+- 名称修复：code 无点统一 + db 兜底（修复 sh.600984 sh.600984 双代码显示）
+- **删除「最近20个交易日数据」整块**（表格/CSV）；Excel 仅信号摘要 sheet
+- 所属板块：multi_map 多板块展示（'、'.join）
+
+**utils/data_feeder.py（§7）**：get_industry_data db 缓存/在线源两处返回
+补 multi_map（{code: [行业]}）——页面多板块展示用
+
+**验收（§8 全部通过）**：A catalog 390 + 指数K线（中文列）；B 板块强度
+无样本字段含板块代码；C 名称字典 5211 只（600984=建设机械）；
+单测 69/69
 
 ## 5. 接口设计
 

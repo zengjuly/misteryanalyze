@@ -208,8 +208,12 @@ class DataFeeder:
                         industry_codes = {}
                         for c, ind in code_map.items():
                             industry_codes.setdefault(str(ind), []).append(c)
+                        multi_map = {c: [str(ind)]
+                                     for c, ind in code_map.items()}
                         return {'code_map': code_map,
-                                'industry_codes': industry_codes}
+                                'industry_codes': industry_codes,
+                                'multi_map': multi_map,
+                                'source': 'db'}
             except Exception as e:
                 logger.warning(f"⚠️ DataFeeder 行业缓存读取失败: {str(e)[:60]}")
         # 2. 在线源拉取（东财行业主源——名称简短接近通达信风格；失败回退 baostock）
@@ -246,7 +250,10 @@ class DataFeeder:
                 except Exception as e:
                     logger.warning(f"⚠️ 行业分类填充 db 失败: {str(e)[:60]}")
                 return {'code_map': code_map,
-                        'industry_codes': industry_codes}
+                        'industry_codes': industry_codes,
+                        'multi_map': {c: [str(ind)] for c, ind
+                                      in code_map.items()},
+                        'source': 'online'}
         except Exception as e:
             logger.warning(f"⚠️ DataFeeder.get_industry_data 异常: {str(e)[:80]}")
         return {}

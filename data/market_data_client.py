@@ -362,6 +362,42 @@ class MarketDataClient:
         return df.reset_index(drop=True)
 
     # ============ 主备退避核心 ============
+    # ============ 板块统一入口（082203 §3 / 082204 §6） ============
+    def list_sector_catalog(self) -> list:
+        """板块目录 [{thscode, name}, ...]"""
+        cli = getattr(self, 'ths_client', None)
+        if cli is not None and hasattr(cli, 'get_index_catalog'):
+            return cli.get_index_catalog()
+        return []
+
+    def get_block_kline(self, block_name: str = None,
+                        sector_code: str = None,
+                        days: int = 1100) -> pd.DataFrame:
+        """板块指数日K：优先 ths_official；禁止回退为个股抽样（082203 §3）"""
+        chain = getattr(self, 'active_chain', None) or (
+            [getattr(self, 'primary', 'ths_official')]
+            + list(getattr(self, 'fallback_list', []) or []))
+        for source in chain:
+            try:
+                if source in ('ths_official', 'ths'):
+                    cli = getattr(self, 'ths_client', None)
+                    if cli is None:
+                        continue
+                    if sector_code and hasattr(cli,
+                                               'fetch_block_daily_by_code'):
+                        df = cli.fetch_block_daily_by_code(sector_code,
+                                                           days=days)
+                    elif block_name:
+                        df = cli.fetch_block_daily(block_name, days=days)
+                    else:
+                        continue
+                    if df is not None and not df.empty and len(df) >= 20:
+                        return df
+            except Exception as e:
+                logger.debug(f'get_block_kline {source}: {e}')
+                continue
+        return pd.DataFrame()
+
     def _fetch_with_fallback(self, code: str, period: str,
                              start_date: str, end_date: str) -> pd.DataFrame:
         """

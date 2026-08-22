@@ -46,6 +46,44 @@ class ThsOfficialClient:
         # key 不写入代码/配置/日志）
         # 子进程解释器: 默认当前 venv python（fuyao 依赖在 venv 中）
         self._fuyao_python = self.cfg.get('python_path') or sys.executable
+        # 板块目录进程内缓存（docs/082203.md §2）
+        self._index_catalog_cache = None
+        self._index_name_to_code = {}
+
+    # ---------- 板块目录缓存（082203 §2） ----------
+    def get_index_catalog(self, force: bool = False) -> list:
+        """index-catalog 一次拉取，进程内缓存。返回 [{thscode, name}, ...]"""
+        if self._index_catalog_cache is not None and not force:
+            return self._index_catalog_cache
+        raw = self._run_fuyao(['index-catalog'])
+        out = []
+        name_map = {}
+        for cat in (raw or []):
+            if not isinstance(cat, dict):
+                continue
+            code = cat.get('thscode') or cat.get('index_code')
+            name = cat.get('name') or cat.get('index_name')
+            if not code or not name:
+                continue
+            out.append({'thscode': str(code), 'name': str(name)})
+            name_map[str(name)] = str(code)
+        self._index_catalog_cache = out
+        self._index_name_to_code = name_map
+        return out
+
+    def fetch_constituents_by_code(self, thscode: str) -> list:
+        """板块成分股（index-constituents）→ 无点代码列表 [sh600519, ...]"""
+        if not thscode:
+            return []
+        cons = self._run_fuyao(
+            ['index-constituents', '--thscode', str(thscode)])
+        stocks = []
+        for item in (cons or []):
+            raw = item.get('thscode', '')
+            if '.' in raw:
+                code, mkt = raw.split('.')
+                stocks.append(f"{mkt.lower()}{code}")
+        return stocks
 
     # ============ 0. 本地 MarketDB 秒级读取（0822.md 核心） ============
     def _fetch_daily_local(self, ths_code: str, start_date: str,
@@ -201,11 +239,9 @@ class ThsOfficialClient:
 
     # ============ 3. 板块目录与成分 ============
     def fetch_block_info(self) -> dict:
-        """全市场板块（概念/行业）及成分股: {板块名: [sh600519, ...]}
-        docs/0821.md index-catalog + index-constituents
-        """
+        """全市场板块及成分股: {板块名: [sh600519, ...]}（082203 §2.4 缓存目录）"""
         block_map = {}
-        catalogs = self._run_fuyao(['index-catalog'])
+        catalogs = self.get_index_catalog()
         if not catalogs:
             return block_map
         for cat in catalogs[:200]:  # 最多 200 个板块（防过慢）
@@ -227,10 +263,12 @@ class ThsOfficialClient:
         return block_map
 
     # ============ 4. 板块历史行情 ============
-    def fetch_index_hist(self, index_code: str, days: int = 1100,
-                         start_date: str = None,
-                         end_date: str = None) -> pd.DataFrame:
-        """板块指数K线（直连 index-historical，docs/082202.md 真实指数）"""
+    def fetch_block_daily_by_code(self, thscode: str, days: int = 1100,
+                                  start_date: str = None,
+                                  end_date: str = None) -> pd.DataFrame:
+        """板块指数日K：index-historical --thscode，不扫目录（082203 §2.2）"""
+        if not thscode:
+            return pd.DataFrame()
         if end_date is None:
             end = datetime.now()
         else:
@@ -238,7 +276,7 @@ class ThsOfficialClient:
         start = (end - timedelta(days=days)) if start_date is None \
             else pd.to_datetime(start_date)
         raw = self._run_fuyao([
-            'index-historical', '--thscode', index_code,
+            'index-historical', '--thscode', str(thscode),
             '--start-ms', str(int(start.timestamp() * 1000)),
             '--end-ms', str(int(end.timestamp() * 1000))])
         if not raw:
@@ -257,40 +295,25 @@ class ThsOfficialClient:
         out['换手率'] = None
         return out.sort_values('日期').reset_index(drop=True)
 
+    # 兼容别名（082202 sync_sector_data 曾用名）
+    def fetch_index_hist(self, index_code: str, days: int = 1100,
+                         start_date: str = None,
+                         end_date: str = None) -> pd.DataFrame:
+        return self.fetch_block_daily_by_code(
+            index_code, days=days, start_date=start_date, end_date=end_date)
+
     def fetch_block_daily(self, block_name: str, days: int = 1100,
                           start_date: str = None,
                           end_date: str = None) -> pd.DataFrame:
-        """板块指数历史K线（docs/0821.md index-historical）"""
-        catalogs = self._run_fuyao(['index-catalog'])
-        target = None
-        for cat in catalogs:
-            if (cat.get('name') or cat.get('index_name')) == block_name:
-                target = cat.get('thscode') or cat.get('index_code')
-                break
+        """按板块中文名解析 thscode 后拉指数日K（082203 §2.3 缓存目录）"""
+        self.get_index_catalog()
+        target = self._index_name_to_code.get(block_name)
+        if not target:
+            for cat in (self._index_catalog_cache or []):
+                if cat.get('name') == block_name:
+                    target = cat.get('thscode')
+                    break
         if not target:
             return pd.DataFrame()
-        if end_date is None:
-            end = datetime.now()
-        else:
-            end = pd.to_datetime(end_date)
-        start = (end - timedelta(days=days)) if start_date is None \
-            else pd.to_datetime(start_date)
-        raw = self._run_fuyao([
-            'index-historical', '--thscode', target,
-            '--start-ms', str(int(start.timestamp() * 1000)),
-            '--end-ms', str(int(end.timestamp() * 1000))])
-        if not raw:
-            return pd.DataFrame()
-        df = pd.DataFrame(raw)
-        if df.empty or 'date_ms' not in df.columns:
-            return pd.DataFrame()
-        out = pd.DataFrame()
-        out['日期'] = pd.to_datetime(df['date_ms'], unit='ms')
-        out['开盘价'] = df.get('open_price', 0).astype(float)
-        out['最高价'] = df.get('high_price', 0).astype(float)
-        out['最低价'] = df.get('low_price', 0).astype(float)
-        out['收盘价'] = df.get('close_price', 0).astype(float)
-        out['成交量'] = df.get('volume', 0).astype(float)
-        out['成交额'] = df.get('turnover', 0).astype(float)
-        out['换手率'] = None
-        return out.sort_values('日期').reset_index(drop=True)
+        return self.fetch_block_daily_by_code(
+            target, days=days, start_date=start_date, end_date=end_date)
