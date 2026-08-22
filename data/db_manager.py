@@ -242,17 +242,25 @@ class MysteryDB:
 
     def save_sector_kline(self, sector_code: str, sector_name: str,
                           df: pd.DataFrame, source_type: str = 'ths') -> int:
-        """批量写入板块指数K线（INSERT OR REPLACE，幂等）"""
+        """批量写入板块指数K线（INSERT OR REPLACE，幂等）
+        注意：成交量可能为 NaN（个别板块缺失）→ 容错为 0（修复 886082 类失败）
+        """
         if df is None or df.empty:
             return 0
         rows = []
         for _, r in df.iterrows():
+            def _f(v, default=0.0):
+                try:
+                    v = float(v)
+                    return v if not pd.isna(v) else default
+                except (TypeError, ValueError):
+                    return default
+            vol = _f(r.get('成交量', 0), 0)
             rows.append((sector_code, sector_name,
                          pd.to_datetime(r['日期']).strftime('%Y-%m-%d'),
-                         float(r.get('开盘价', 0)), float(r.get('最高价', 0)),
-                         float(r.get('最低价', 0)), float(r.get('收盘价', 0)),
-                         int(r.get('成交量', 0) or 0),
-                         float(r.get('成交额', 0) or 0), source_type))
+                         _f(r.get('开盘价')), _f(r.get('最高价')),
+                         _f(r.get('最低价')), _f(r.get('收盘价')),
+                         int(vol), _f(r.get('成交额')), source_type))
         with self._lock:
             conn = self._connect()
             try:
