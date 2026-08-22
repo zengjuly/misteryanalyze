@@ -79,11 +79,20 @@ class ThsOfficialClient:
         return out
 
     def fetch_constituents_by_code(self, thscode: str) -> list:
-        """板块成分股（index-constituents）→ 无点代码列表 [sh600519, ...]"""
+        """板块成分股（index-constituents）→ 无点代码列表 [sh600519, ...]
+        docs/082213 修复: ths_885525 → 885525.SH（命令要求交易所后缀，否则报错空返回）
+        """
         if not thscode:
             return []
+        t = str(thscode)
+        # docs/082213 修复: ths_885525 → 885525.TI（index-constituents 需板块
+        # 指数后缀 .TI / 标准指数 .SH；传 ths_ 前缀或纯数字均报错空返回）
+        if t.startswith('ths_'):
+            t = t[4:] + '.TI'
+        elif '.' not in t:
+            t = t + '.TI'
         cons = self._run_fuyao(
-            ['index-constituents', '--thscode', str(thscode)])
+            ['index-constituents', '--thscode', t])
         stocks = []
         for item in (cons or []):
             raw = item.get('thscode', '')

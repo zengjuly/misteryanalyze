@@ -2120,6 +2120,30 @@ stop 异常传播导致 spinner 不关闭，前端残留"正在分析"）
 
 **提交**：fix(web): 分析完成自动渲染结果(移除完成路径st.stop)
 
+### 4.45 三问题修复：自选股名称/板块成分股/所属板块（docs/082213，2026-08-22）
+
+**用户反馈**：①自选股只有代码无名称 ②板块成分股"分析无结果（数据不足）"
+③个股分析"所属板块: 错误"
+
+**① 自选股名称（2 文件 + 数据回填）**：
+- 根因：tdx_watchlist_sync 支持 name_map 但页面调用未传 → name=''；
+  stock_industry_info 同步时缺 412 只（fuyao 分页漏）
+- 修复：6_自选股.py 构建 NAME_MAP（DataFeeder 名称字典）传入 sync + 列表显示兜底；
+  数据回填：ths tickers 5559 → 补 412 只缺失 → watchlist 35/35 有名称
+
+**② 板块成分股（data/ths_client.py）**：
+- 根因：`index-constituents` 需板块指数后缀 `.TI`（如 885525.TI），
+  传 ths_885525/885525.SH 均报错空返回（885525.SH 为 Unknown thscode）
+- 修复：fetch_constituents_by_code 自动转换 ths_885525 → 885525.TI
+- 验证：白酒 48 只 / 新能源汽车 1065 只
+
+**③ 所属板块（web/pages/1_个股分析.py）**：
+- 根因：session industry_map 异常/缺失时无兜底；科创板（688）无 TDX 行业
+- 修复：try 包裹 + db 行业兜底（stock_industry_info.industry），
+  任何异常显示"未知"而非"错误"
+
+**提交**：fix: 自选股名称回填+板块成分股.TI格式+所属板块db兜底(docs/082213)
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
