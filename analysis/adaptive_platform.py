@@ -103,6 +103,7 @@ def calculate_adaptive_vap_atr(
     atr_m: int = 14,
     k: float = 1.8,
     market_type: str = "MainBoard",
+    latest_only: bool = False,
 ) -> pd.DataFrame:
     """
     自适应 VAP-ATR 平台中枢计算（专为A股优化，适配T+1与涨跌停机制）
@@ -112,6 +113,7 @@ def calculate_adaptive_vap_atr(
     :param atr_m: ATR计算窗口（默认14）
     :param k: 波动率乘数（A股主板默认1.8，创业板/科创板可调）
     :param market_type: 'MainBoard'(主板10%) 或 'ChiNext_STAR'(创业板/科创板20%)
+    :param latest_only: 仅计算末窗 POC（展示用，docs/082207.md；扫描需全序列保持 False）
     :return: 增加 poc/platform_upper/platform_lower/is_breakout 等列的DataFrame
     """
     df = data.copy()
@@ -167,14 +169,20 @@ def calculate_adaptive_vap_atr(
         max_idx = np.argmax(hist)
         return float((bin_edges[max_idx] + bin_edges[max_idx + 1]) / 2)
 
-    # 滚动应用（效率优化：仅对窗口起始位置计算）
-    poc_series = []
-    for i in range(len(df)):
-        if i < n - 1:
-            poc_series.append(np.nan)
-        else:
-            window = df.iloc[i - n + 1: i + 1]
-            poc_series.append(get_cn_poc(window))
+    # 滚动应用（效率优化：仅对窗口起始位置计算；latest_only 只算末窗）
+    # 末窗模式（docs/082207.md）：展示只读 iloc[-1] 的 POC，全滚动循环跳过
+    if latest_only:
+        poc_series = [np.nan] * (len(df) - 1) + [
+            get_cn_poc(df.iloc[-n:]) if len(df) >= n else np.nan
+        ]
+    else:
+        poc_series = []
+        for i in range(len(df)):
+            if i < n - 1:
+                poc_series.append(np.nan)
+            else:
+                window = df.iloc[i - n + 1: i + 1]
+                poc_series.append(get_cn_poc(window))
     df['poc'] = poc_series
 
     # 5. 构建自适应通道上下轨
@@ -200,6 +208,7 @@ def analyze_adaptive_platform(
     n: int = None,
     atr_m: int = None,
     k: float = None,
+    latest_only: bool = True,
 ) -> Dict[str, Any]:
     """
     自适应平台分析入口（供主流程调用）
@@ -209,6 +218,8 @@ def analyze_adaptive_platform(
     :param n: POC窗口（None=自动按换手率自适应，见 calculate_adaptive_lookback）
     :param atr_m: ATR窗口（None=自适应: clip(round(n/4), 10, 14)，双周期嵌套快窗口）
     :param k: 波动率乘数（None=按换手率自适应: 高换手活跃股2.2/默认1.8/低换手蓝筹1.5）
+    :param latest_only: 仅计算末窗 POC（个股展示默认 True，docs/082207.md；
+                        扫描需全序列历史突破列 → 显式 False）
     :return: 分析结果字典
     """
     result = {
@@ -258,7 +269,9 @@ def analyze_adaptive_platform(
             k = 1.8
 
     try:
-        df = calculate_adaptive_vap_atr(data, n=n, atr_m=atr_m, k=k, market_type=market_type)
+        df = calculate_adaptive_vap_atr(data, n=n, atr_m=atr_m, k=k,
+                                        market_type=market_type,
+                                        latest_only=latest_only)
 
         # 取最新值
         latest = df.iloc[-1]

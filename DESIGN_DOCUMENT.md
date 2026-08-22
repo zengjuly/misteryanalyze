@@ -1924,6 +1924,29 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 
 **提交**：perf: 财务优先ths估值快照；行业map/板块强度session缓存并传入三振
 
+### 4.36 分析缓存扩大 + POC 末窗（docs/082207.md，2026-08-22）
+
+**优化（用户方案）**，改动 3 文件：
+
+**A. analysis/adaptive_platform.py — POC latest_only**
+- `calculate_adaptive_vap_atr` 加 `latest_only: bool = False`（默认全滚动，扫描不变）
+- `analyze_adaptive_platform` 加 `latest_only: bool = True`（个股展示默认末窗）
+- 末窗模式：poc_series 只算最后一行，全滚动循环跳过
+
+**B. web/pages/1_📈_个股分析.py — 缓存扩大**
+- B1: 缓存载荷 `signal + ap/plat/det/cl`（明细一次算完写入，JSON 可序列化）
+- B2: 命中缓存跳过全部明细重算；未带齐（旧缓存仅 signal）才补算
+- day_box POC 改 `(ap or {}).get('POC')`（ap 恒为 dict）
+
+**扫描**：`run_market_scan.py` 显式 `latest_only=False`（全序列突破列）
+
+**验收（全部通过）**：
+- POC 末窗 0.015s vs 全滚动 0.410s → **提速 26.6 倍**，POC 值一致（56.91）
+- 缓存写读全链路：signal+ap+plat+det+cl 全 True（JSON 兼容）
+- 扫描显式 False（行为与改前一致）
+
+**提交**：perf: analysis_cache 含ap/plat/det/cl；展示POC仅末窗
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

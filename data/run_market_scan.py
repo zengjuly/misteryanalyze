@@ -146,9 +146,10 @@ def scan_single_stock(engine: MysteryDataEngine, code: str,
         # 量比（technical_detail_capture 筹码/量比指标需要，缺失会抛 '量比' 异常）
         indicators = MomentumIndicators().calculate_volume_ratio(indicators)
 
-        # 自适应 VAP-ATR 平台
+        # 自适应 VAP-ATR 平台（扫描需全序列 → latest_only=False，docs/082207.md）
         from analysis.adaptive_platform import analyze_adaptive_platform
-        platform = analyze_adaptive_platform(indicators, code)
+        platform = analyze_adaptive_platform(indicators, code,
+                                             latest_only=False)
 
         # 主升浪8项指标（docs/081601.md: 使能主升浪）
         from analysis.mystery_logic import MysteryLogic

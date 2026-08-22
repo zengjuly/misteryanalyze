@@ -153,13 +153,18 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             daily = long_df
             last_date = str(daily['日期'].max())[:10]
 
-            # ===== 分析结果缓存（docs/ui2.md 二级缓存） =====
+            # ===== 分析结果缓存（signal + 明细 ap/plat/det/cl，docs/082207.md） =====
             db_code = code[:2] + '.' + code[2:] if '.' not in code else code
             cached = db.get_analysis_cache(db_code, 'daily', last_date)
+            ap = plat = det = cl = None
             if cached and cached.get('signal'):
                 signal = cached['signal']
+                ap = cached.get('ap') or {}
+                plat = cached.get('plat') or {}
+                det = cached.get('det') or {}
+                cl = cached.get('cl') or {}
                 st.caption(f"⚡ 命中分析缓存（最新交易日 {last_date}，"
-                           f"行情未更新未重复分析）")
+                           f"含明细载荷，跳过重复计算）")
             else:
                 weekly = feeder.get_weekly(code)
                 # 大盘指数会话内只拉一次（指数获取走在线源较慢，避免每次分析卡顿）
@@ -193,8 +198,35 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
                     daily, weekly_data=weekly, market_data=market_data,
                     industry_data=industry_data,
                     industry_trend=industry_trend)
-                db.set_analysis_cache(db_code, 'daily', last_date,
-                                      {'signal': signal})
+
+                # 明细一次算完写入缓存（可 JSON 序列化，docs/082207.md）
+                try:
+                    from analysis.adaptive_platform import (
+                        analyze_adaptive_platform)
+                    ap = analyze_adaptive_platform(
+                        daily, stock_code=code, latest_only=True)
+                except Exception:
+                    ap = {}
+                try:
+                    plat = logic.platform_breakthrough_analysis(daily)
+                except Exception:
+                    plat = {}
+                try:
+                    det = logic.technical_detail_capture(daily)
+                except Exception:
+                    det = {}
+                try:
+                    cl = logic.main_bull_wave_checklist(daily)
+                except Exception:
+                    cl = {}
+
+                db.set_analysis_cache(db_code, 'daily', last_date, {
+                    'signal': signal,
+                    'ap': ap,
+                    'plat': plat,
+                    'det': det,
+                    'cl': cl,
+                })
 
             st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
 
@@ -247,28 +279,46 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
 
             # ---------- 3. Excel 对齐明细 ----------
             st.subheader("📋 分析明细（与Excel报告对齐）")
+            # 缓存未带齐明细时补算（兼容旧缓存仅含 signal，docs/082207.md）
+            if not ap:
+                try:
+                    from analysis.adaptive_platform import (
+                        analyze_adaptive_platform)
+                    ap = analyze_adaptive_platform(
+                        daily, stock_code=code, latest_only=True)
+                except Exception as e:
+                    ap = {}
+                    st.caption(f"自适应平台: {e}")
+            if not plat:
+                try:
+                    plat = logic.platform_breakthrough_analysis(daily)
+                except Exception:
+                    plat = {}
+            if not det:
+                try:
+                    det = logic.technical_detail_capture(daily)
+                except Exception:
+                    det = {}
+            if not cl:
+                try:
+                    cl = logic.main_bull_wave_checklist(daily)
+                except Exception:
+                    cl = {}
+
             # 震荡区间（自适应平台 + 平台箱体）
-            try:
-                from analysis.adaptive_platform import analyze_adaptive_platform
-                ap = analyze_adaptive_platform(daily, stock_code=code)
-                p1, p2, p3 = st.columns(3)
-                p1.metric("自适应平台 POC", ap.get('POC', 'N/A'))
-                p2.metric("平台上轨", ap.get(
-                    '自适应上轨', ap.get('上轨', ap.get('upper', 'N/A'))))
-                p3.metric("平台下轨", ap.get(
-                    '自适应下轨', ap.get('下轨', ap.get('lower', 'N/A'))))
-            except Exception as e:
-                st.caption(f"自适应平台: {e}")
-            plat = logic.platform_breakthrough_analysis(daily)
+            p1, p2, p3 = st.columns(3)
+            p1.metric("自适应平台 POC", ap.get('POC', 'N/A'))
+            p2.metric("平台上轨", ap.get(
+                '自适应上轨', ap.get('上轨', ap.get('upper', 'N/A'))))
+            p3.metric("平台下轨", ap.get(
+                '自适应下轨', ap.get('下轨', ap.get('lower', 'N/A'))))
             if plat.get('平台范围'):
                 st.markdown(f"**震荡区间（平台箱体）**: {plat.get('平台范围')} "
                             f"| 状态: {plat.get('平台状态', '未知')}")
             # 筹码分析
-            det = logic.technical_detail_capture(daily)
             st.markdown(f"**筹码分析**: 集中度 {det.get('筹码集中度', '未知')} "
                         f"| 趋势 {det.get('筹码趋势', '未知')}")
             # 主升浪8项指标对比表
-            cl = logic.main_bull_wave_checklist(daily)
             if cl.get('详情'):
                 items = [d for d in cl['详情'] if '✅' in d or '❌' in d]
                 if items:
@@ -436,7 +486,7 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             # 日K箱体（近20日震荡区间）
             day_box = {'上沿': float(daily['最高价'].tail(20).max()),
                        '下沿': float(daily['最低价'].tail(20).min()),
-                       'POC': ap.get('POC') if 'ap' in dir() else None}
+                       'POC': (ap or {}).get('POC')}
             tab_d, tab_w, tab_m = st.tabs(["📅 日线", "📆 周线", "🗓️ 月线"])
             with tab_d:
                 st.plotly_chart(_prep_kline(long_df, day_box, max_bars=1000),
