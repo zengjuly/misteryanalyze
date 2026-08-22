@@ -51,6 +51,11 @@ def search_stock(term: str):
     term = (term or '').lower().strip()
     if not term:
         return [f"{c} - {n}" for c, n in list(stock_dict.items())[:30]]
+    # 单字符不扫全表（docs/082208 §2: 避免每次按键全市场遍历慢卡）
+    if len(term) < 2:
+        # 仅匹配代码前缀（sh/sz + 数字开头），不遍历名称
+        return [f"{c} - {n}" for c, n in list(stock_dict.items())[:30]
+                if c.lower().startswith(term)]
     hits = [f"{c} - {n}" for c, n in stock_dict.items()
             if term in c.lower() or term in n.lower()]
     return hits[:30]
@@ -69,20 +74,36 @@ with c1:
         label="🔍 代码/名称模糊搜索",
         placeholder="输入代码或名称，如 600150 / 中国船舶")
 with c2:
-    # 股票池 = 自选股列表（watchlist_manager 独立库，sh.600150 格式）
+    # 自选股 session 缓存（docs/082208 §3: TTL 或按钮刷新，不每键 list_all）
     try:
-        from watchlist_manager import WatchlistManager
-        wl = WatchlistManager().list_all()
-        wl_codes = wl['code'].tolist() if not wl.empty else []
-        # 自选股 code(sh.600150) → 无点格式匹配 stock_dict
-        pool_names = [
-            f"{c.replace('.', '')} - {stock_dict.get(c.replace('.', ''), n)}"
-            for c, n in zip(wl_codes,
-                            wl['name'].tolist() if not wl.empty else [])]
+        import time as _time
+        _wl_ts = st.session_state.get('watchlist_ts', 0)
+        _need_wl = (_time.time() - _wl_ts > 300  # TTL 5分钟
+                    or st.session_state.get('watchlist_force_refresh'))
+        if _need_wl:
+            from watchlist_manager import WatchlistManager
+            wl = WatchlistManager().list_all()
+            wl_codes = wl['code'].tolist() if not wl.empty else []
+            # 自选股 code(sh.600150) → 无点格式匹配 stock_dict
+            pool_names = [
+                f"{c.replace('.', '')} - "
+                f"{stock_dict.get(c.replace('.', ''), n)}"
+                for c, n in zip(wl_codes,
+                                wl['name'].tolist() if not wl.empty else [])]
+            st.session_state['watchlist_pool_names'] = pool_names
+            st.session_state['watchlist_ts'] = _time.time()
+            st.session_state['watchlist_force_refresh'] = False
+        pool_names = st.session_state.get('watchlist_pool_names') or []
     except Exception:
         pool_names = [f"{s} - {stock_dict.get(s, '')}"
                       for s in cfg.get('stocks', [])]
-    pool_sel = st.selectbox("⭐ 自选股", [''] + pool_names)
+    r1, r2 = st.columns([4, 1])
+    with r1:
+        pool_sel = st.selectbox("⭐ 自选股", [''] + pool_names)
+    with r2:
+        if st.button("🔄", help="刷新自选股"):
+            st.session_state['watchlist_force_refresh'] = True
+            st.rerun()
     if pool_sel:
         selected = pool_sel
 
@@ -132,101 +153,105 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             from datetime import datetime, timedelta
             db = MysteryDB()
 
-# ===== 日 K 只拉一次：长窗口，分析与图表共用（docs/082205.md） =====
-            kkey = f'kline_long_{code}'
-            if kkey not in st.session_state:
-                start4y = (datetime.now() - timedelta(days=365 * 4)
-                           ).strftime('%Y-%m-%d')
-                long_df = feeder.get_daily(code, start_date=start4y)
+# ===== 阶段1：日K（docs/082208 §4 分阶段 spinner） =====
+            with st.spinner("① 加载日K..."):
+                # 日 K 只拉一次：长窗口，分析与图表共用（docs/082205.md）
+                kkey = f'kline_long_{code}'
+                if kkey not in st.session_state:
+                    start4y = (datetime.now() - timedelta(days=365 * 4)
+                               ).strftime('%Y-%m-%d')
+                    long_df = feeder.get_daily(code, start_date=start4y)
+                    if long_df is None or long_df.empty:
+                        # 无 start_date 再试一次（兼容部分源忽略 start_date）
+                        long_df = feeder.get_daily(code)
+                    if long_df is not None and not long_df.empty:
+                        st.session_state[kkey] = long_df
+                long_df = st.session_state.get(kkey)
+
                 if long_df is None or long_df.empty:
-                    # 无 start_date 再试一次（兼容部分源忽略 start_date）
-                    long_df = feeder.get_daily(code)
-                if long_df is not None and not long_df.empty:
-                    st.session_state[kkey] = long_df
-            long_df = st.session_state.get(kkey)
+                    st.error(f"❌ 无法获取 {code} 行情数据")
+                    st.stop()
 
-            if long_df is None or long_df.empty:
-                st.error(f"❌ 无法获取 {code} 行情数据")
-                st.stop()
+                # 分析用同一 DataFrame（指标已在 get_daily 内附带 MA）
+                daily = long_df
+                last_date = str(daily['日期'].max())[:10]
 
-            # 分析用同一 DataFrame（指标已在 get_daily 内附带 MA）
-            daily = long_df
-            last_date = str(daily['日期'].max())[:10]
-
-            # ===== 分析结果缓存（signal + 明细 ap/plat/det/cl，docs/082207.md） =====
-            db_code = code[:2] + '.' + code[2:] if '.' not in code else code
-            cached = db.get_analysis_cache(db_code, 'daily', last_date)
-            ap = plat = det = cl = None
-            if cached and cached.get('signal'):
-                signal = cached['signal']
-                ap = cached.get('ap') or {}
-                plat = cached.get('plat') or {}
-                det = cached.get('det') or {}
-                cl = cached.get('cl') or {}
-                st.caption(f"⚡ 命中分析缓存（最新交易日 {last_date}，"
-                           f"含明细载荷，跳过重复计算）")
-            else:
-                weekly = feeder.get_weekly(code)
-                # 大盘指数会话内只拉一次（指数获取走在线源较慢，避免每次分析卡顿）
-                if 'market_data_cache' not in st.session_state:
-                    with st.spinner("加载大盘指数数据..."):
-                        st.session_state['market_data_cache'] = \
-                            feeder.get_market_index()
-                market_data = st.session_state['market_data_cache']
-                # 行业趋势：优先板块强度 map（session/模块缓存），否则仅 bool 缺失
-                # （docs/082206: 有板块名时应尽力算 bool，不双空）
-                industry_trend = None
-                industry_data = None
-                try:
-                    ind_map = st.session_state.get('industry_map') or {}
-                    cm = ind_map.get('code_map') or {}
-                    ind_name = cm.get(db_code) or cm.get(code)
-                    if ind_name:
-                        from web.pages_util import build_sector_strength_map
-                        if 'sector_strength_map' not in st.session_state:
-                            st.session_state['sector_strength_map'] = \
-                                build_sector_strength_map()
-                        smap = st.session_state['sector_strength_map'] or {}
-                        score = smap.get(ind_name)
-                        if score is not None:
-                            # 与板块监控同一套得分：>0 视为向上
-                            industry_trend = bool(float(score) > 0)
-                except Exception:
+# ===== 阶段2：信号（含缓存，docs/082208 §4） =====
+            with st.spinner("② 综合信号分析..."):
+                # ===== 分析结果缓存（signal + 明细 ap/plat/det/cl，docs/082207.md） =====
+                db_code = code[:2] + '.' + code[2:] if '.' not in code else code
+                cached = db.get_analysis_cache(db_code, 'daily', last_date)
+                ap = plat = det = cl = None
+                if cached and cached.get('signal'):
+                    signal = cached['signal']
+                    ap = cached.get('ap') or {}
+                    plat = cached.get('plat') or {}
+                    det = cached.get('det') or {}
+                    cl = cached.get('cl') or {}
+                    st.caption(f"⚡ 命中分析缓存（最新交易日 {last_date}，"
+                               f"含明细载荷，跳过重复计算）")
+                else:
+                    weekly = feeder.get_weekly(code)
+                    # 大盘指数会话内只拉一次（指数获取走在线源较慢，避免每次分析卡顿）
+                    if 'market_data_cache' not in st.session_state:
+                        with st.spinner("加载大盘指数数据..."):
+                            st.session_state['market_data_cache'] = \
+                                feeder.get_market_index()
+                    market_data = st.session_state['market_data_cache']
+                    # 行业趋势：优先板块强度 map（session/模块缓存），否则仅 bool 缺失
+                    # （docs/082206: 有板块名时应尽力算 bool，不双空）
                     industry_trend = None
+                    industry_data = None
+                    try:
+                        ind_map = st.session_state.get('industry_map') or {}
+                        cm = ind_map.get('code_map') or {}
+                        ind_name = cm.get(db_code) or cm.get(code)
+                        if ind_name:
+                            from web.pages_util import build_sector_strength_map
+                            if 'sector_strength_map' not in st.session_state:
+                                st.session_state['sector_strength_map'] = \
+                                    build_sector_strength_map()
+                            smap = st.session_state['sector_strength_map'] or {}
+                            score = smap.get(ind_name)
+                            if score is not None:
+                                # 与板块监控同一套得分：>0 视为向上
+                                industry_trend = bool(float(score) > 0)
+                    except Exception:
+                        industry_trend = None
 
-                signal = logic.comprehensive_signal_analysis(
-                    daily, weekly_data=weekly, market_data=market_data,
-                    industry_data=industry_data,
-                    industry_trend=industry_trend)
+                    signal = logic.comprehensive_signal_analysis(
+                        daily, weekly_data=weekly, market_data=market_data,
+                        industry_data=industry_data,
+                        industry_trend=industry_trend)
 
-                # 明细一次算完写入缓存（可 JSON 序列化，docs/082207.md）
-                try:
-                    from analysis.adaptive_platform import (
-                        analyze_adaptive_platform)
-                    ap = analyze_adaptive_platform(
-                        daily, stock_code=code, latest_only=True)
-                except Exception:
-                    ap = {}
-                try:
-                    plat = logic.platform_breakthrough_analysis(daily)
-                except Exception:
-                    plat = {}
-                try:
-                    det = logic.technical_detail_capture(daily)
-                except Exception:
-                    det = {}
-                try:
-                    cl = logic.main_bull_wave_checklist(daily)
-                except Exception:
-                    cl = {}
+                    # 明细一次算完写入缓存（可 JSON 序列化，docs/082207.md）
+                    try:
+                        from analysis.adaptive_platform import (
+                            analyze_adaptive_platform)
+                        ap = analyze_adaptive_platform(
+                            daily, stock_code=code, latest_only=True)
+                    except Exception:
+                        ap = {}
+                    try:
+                        plat = logic.platform_breakthrough_analysis(daily)
+                    except Exception:
+                        plat = {}
+                    try:
+                        det = logic.technical_detail_capture(daily)
+                    except Exception:
+                        det = {}
+                    try:
+                        cl = logic.main_bull_wave_checklist(daily)
+                    except Exception:
+                        cl = {}
 
-                db.set_analysis_cache(db_code, 'daily', last_date, {
-                    'signal': signal,
-                    'ap': ap,
-                    'plat': plat,
-                    'det': det,
-                    'cl': cl,
-                })
+                    db.set_analysis_cache(db_code, 'daily', last_date, {
+                        'signal': signal,
+                        'ap': ap,
+                        'plat': plat,
+                        'det': det,
+                        'cl': cl,
+                    })
 
             st.success(f"✅ {code} {name} 分析完成（最新交易日 {last_date}）")
 
@@ -249,33 +274,34 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             st.subheader("💡 操作建议")
             render_advice(signal)
 
-            # ---------- 2. 财务数据（docs/ui2.md, 无缓存自动拉取） ----------
+            # ---------- 2. 财务数据（docs/ui2.md, 无缓存自动拉取；docs/082208 §4 阶段3） ----------
             st.subheader("💰 财务数据")
-            try:
-                from financial_storage import FinancialStorage
-                fs = FinancialStorage(db)
-                fi = fs.ensure_financial(db_code)
-                if fi:
-                    f1, f2, f3, f4 = st.columns(4)
-                    f1.metric("PE", fi.get('PE', 'N/A'))
-                    f2.metric("PB", fi.get('PB', 'N/A'))
-                    f3.metric("股息率",
-                              f"{fi.get('股息率', 0):.2f}%" if fi.get('股息率') is not None else 'N/A')
-                    f4.metric("最新ROE",
-                              f"{fi.get('ROE', 0):.2f}%" if fi.get('ROE') is not None else 'N/A')
-                    if fi.get('报告期'):
-                        st.caption(f"报告期: {fi.get('报告期')}")
-                    hist = fs.load_history(db_code, limit=8)
-                    if hist is not None and not hist.empty:
-                        with st.expander("📊 近三年 ROE 历史"):
-                            # load_financial 返回英文原始列（report_date/roe）
-                            roe_df = hist[['report_date', 'roe']].dropna().tail(8)
-                            roe_df.columns = ['报告期', 'ROE']
-                            st.dataframe(roe_df, width="stretch")
-                else:
-                    st.warning("财务数据获取失败（在线源不可用）")
-            except Exception as e:
-                st.warning(f"财务数据获取失败: {e}")
+            with st.spinner("③ 加载财务..."):
+                try:
+                    from financial_storage import FinancialStorage
+                    fs = FinancialStorage(db)
+                    fi = fs.ensure_financial(db_code)
+                    if fi:
+                        f1, f2, f3, f4 = st.columns(4)
+                        f1.metric("PE", fi.get('PE', 'N/A'))
+                        f2.metric("PB", fi.get('PB', 'N/A'))
+                        f3.metric("股息率",
+                                  f"{fi.get('股息率', 0):.2f}%" if fi.get('股息率') is not None else 'N/A')
+                        f4.metric("最新ROE",
+                                  f"{fi.get('ROE', 0):.2f}%" if fi.get('ROE') is not None else 'N/A')
+                        if fi.get('报告期'):
+                            st.caption(f"报告期: {fi.get('报告期')}")
+                        hist = fs.load_history(db_code, limit=8)
+                        if hist is not None and not hist.empty:
+                            with st.expander("📊 近三年 ROE 历史"):
+                                # load_financial 返回英文原始列（report_date/roe）
+                                roe_df = hist[['report_date', 'roe']].dropna().tail(8)
+                                roe_df.columns = ['报告期', 'ROE']
+                                st.dataframe(roe_df, width="stretch")
+                    else:
+                        st.warning("财务数据获取失败（在线源不可用）")
+                except Exception as e:
+                    st.warning(f"财务数据获取失败: {e}")
 
             # ---------- 3. Excel 对齐明细 ----------
             st.subheader("📋 分析明细（与Excel报告对齐）")
@@ -487,39 +513,50 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
             day_box = {'上沿': float(daily['最高价'].tail(20).max()),
                        '下沿': float(daily['最低价'].tail(20).min()),
                        'POC': (ap or {}).get('POC')}
-            tab_d, tab_w, tab_m = st.tabs(["📅 日线", "📆 周线", "🗓️ 月线"])
-            with tab_d:
-                st.plotly_chart(_prep_kline(long_df, day_box, max_bars=1000),
-                                width="stretch")
-                st.caption(f"日线: 最近 {min(len(long_df), 1000)} 个交易日")
-            with tab_w:
-                wk_long = rs.resample(long_df, 'weekly') if long_df is not None else None
-                if wk_long is not None and len(wk_long):
-                    w_hi = float(wk_long['最高价'].tail(20).max())
-                    w_lo = float(wk_long['最低价'].tail(20).min())
-                    st.plotly_chart(_prep_kline(wk_long,
-                                                {'上沿': w_hi, '下沿': w_lo},
-                                                max_bars=200),
-                                    width="stretch")
-                    st.caption(f"周线（对应日线窗口，最近200周）: "
-                               f"{w_lo:.2f} ~ {w_hi:.2f} "
-                               f"| 最新 {wk_long['收盘价'].iloc[-1]:.2f}")
+
+            # 图表懒加载（docs/082208 §5: 默认只画日线；周/月按需生成）
+            period_sel = st.radio(
+                "周期",
+                ["📅 日线", "📆 周线", "🗓️ 月线"],
+                horizontal=True,
+                key=f"kline_period_{code}",
+            )
+            with st.spinner("④ 绘制K线..."):
+                if period_sel.startswith("📅"):
+                    st.plotly_chart(
+                        _prep_kline(long_df, day_box, max_bars=1000),
+                        width="stretch")
+                    st.caption(f"日线: 最近 {min(len(long_df), 1000)} 个交易日")
+                elif period_sel.startswith("📆"):
+                    wk_long = rs.resample(long_df, 'weekly') \
+                        if long_df is not None else None
+                    if wk_long is not None and len(wk_long):
+                        w_hi = float(wk_long['最高价'].tail(20).max())
+                        w_lo = float(wk_long['最低价'].tail(20).min())
+                        st.plotly_chart(
+                            _prep_kline(wk_long,
+                                        {'上沿': w_hi, '下沿': w_lo},
+                                        max_bars=200),
+                            width="stretch")
+                        st.caption(f"周线: {w_lo:.2f} ~ {w_hi:.2f} | "
+                                   f"最新 {wk_long['收盘价'].iloc[-1]:.2f}")
+                    else:
+                        st.info("周线数据不足")
                 else:
-                    st.info("周线数据不足")
-            with tab_m:
-                mo_long = rs.resample(long_df, 'monthly') if long_df is not None else None
-                if mo_long is not None and len(mo_long):
-                    m_hi = float(mo_long['最高价'].tail(12).max())
-                    m_lo = float(mo_long['最低价'].tail(12).min())
-                    st.plotly_chart(_prep_kline(mo_long,
-                                                {'上沿': m_hi, '下沿': m_lo},
-                                                max_bars=50),
-                                    width="stretch")
-                    st.caption(f"月线（对应日线窗口，最近50月）: "
-                               f"{m_lo:.2f} ~ {m_hi:.2f} "
-                               f"| 最新 {mo_long['收盘价'].iloc[-1]:.2f}")
-                else:
-                    st.info("月线数据不足")
+                    mo_long = rs.resample(long_df, 'monthly') \
+                        if long_df is not None else None
+                    if mo_long is not None and len(mo_long):
+                        m_hi = float(mo_long['最高价'].tail(12).max())
+                        m_lo = float(mo_long['最低价'].tail(12).min())
+                        st.plotly_chart(
+                            _prep_kline(mo_long,
+                                        {'上沿': m_hi, '下沿': m_lo},
+                                        max_bars=50),
+                            width="stretch")
+                        st.caption(f"月线: {m_lo:.2f} ~ {m_hi:.2f} | "
+                                   f"最新 {mo_long['收盘价'].iloc[-1]:.2f}")
+                    else:
+                        st.info("月线数据不足")
 
             # ---------- 5. 分析详情 ----------
             st.subheader("📋 触发条件明细")
