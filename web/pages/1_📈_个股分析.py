@@ -266,6 +266,8 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
         st.stop()
 
     # ★ 结果全部进 session，与 widget rerun 解耦（docs/082210）
+    # 注意：不 st.stop() —— 让脚本继续执行到展示区，分析完成即自动渲染
+    # （docs/082212: 修复"需切换股票才显示结果"——stop 中断导致本次 rerun 不渲染）
     st.session_state['stock_analysis'] = {
         'code': code, 'name': name, 'db_code': db_code,
         'last_date': last_date, 'industry_display': industry_display
@@ -273,7 +275,6 @@ if st.button("🚀 开始分析", type="primary", width="stretch") or _jump_code
         'signal': signal, 'daily': daily, 'long_df': long_df,
         'ap': ap, 'plat': plat, 'det': det, 'cl': cl,
     }
-    st.stop()
 
 # ---------- 展示区（与 button 解耦，docs/082210：切周期不重跑分析） ----------
 ctx = st.session_state.get('stock_analysis')

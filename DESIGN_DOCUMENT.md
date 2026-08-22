@@ -2101,6 +2101,25 @@ stop 异常传播导致 spinner 不关闭，前端残留"正在分析"）
 
 **提交**：fix(web): st.stop移出spinner块 修复分析完成后spinner卡住
 
+### 4.44 分析完成自动渲染（移除完成路径 st.stop，docs/082212，2026-08-22）
+
+**问题（用户反馈）**：分析完成后不自动显示结果，需切换自选股才显示
+
+**根因**：分析完成写 session 后 `st.stop()` 中断脚本 → 本次 rerun 展示区
+未执行 → 需下次交互（切换股票 rerun）走 ctx 渲染才显示
+
+**修复**（web/pages/1_📈_个股分析.py）：
+- 删除分析完成路径的 `st.stop()` → 脚本 fall-through 到展示区
+  （ctx 读取 → `_render_report(ctx)`）→ **分析完成即自动渲染**
+- 错误路径 `st.stop()` 保留（异常时不渲染旧结果）
+
+**验证（AppTest）**：
+- 有 ctx 渲染：exception=0，success=1，subheader=8
+- 无 ctx：exception=0，正常提示
+- 静态：写 session 后无 st.stop（fall-through），错误路径 stop 保留
+
+**提交**：fix(web): 分析完成自动渲染结果(移除完成路径st.stop)
+
 ## 5. 接口设计
 
 ### 5.1 用户接口
