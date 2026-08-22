@@ -1759,6 +1759,24 @@ sync_stock_list 写入 5147 / 空列表报错 error=证券列表为空 / 本地�
 **备注**：ths_official 列表无 ipo/out 日期，type/status 全部置 1（与查询兼容）；
 名称由名称字典（names.json）另行维护
 
+### 4.29 sync --period 多周期修复（action=append，2026-08-22）
+
+**问题（用户命令）**：`python data/sync_all_market.py --period daily
+--period weekly --period monthly --days 1100 --index --force` 只同步了
+**monthly**（daliy/weekly 缺失）
+
+**根因**：`--period` 未加 `action='append'`，argparse 重复传参时**默认只保留
+最后一个值**（monthly）→ `periods=[args.period]` 只剩月度
+
+**修复**：
+- `--period` 加 `action='append', default=None`（可重复传，多周期）
+- main：`periods=args.period or ['daily']`（None 时默认日线）
+
+**验证**：3 周期 limit 3 测试通过；weekly 全量补跑（5147只，约30分钟）；
+full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147只
+
+**备注**：断点文件带 periods 元数据，参数变更自动失效重同步（docs/step3.md）
+
 ## 5. 接口设计
 
 ### 5.1 用户接口

@@ -286,7 +286,9 @@ def sync_all_market(periods: list = None, days: int = None,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='全市场数据同步到本地缓存')
     parser.add_argument('--period', choices=['daily', 'weekly', 'monthly'],
-                        default='daily', help='同步周期')
+                        action='append', default=None,
+                        help='同步周期（可重复传，如 --period daily '
+                             '--period weekly --period monthly）')
     parser.add_argument('--days', type=int, default=None, help='回溯天数')
     parser.add_argument('--threads', type=int, default=None,
                         help='线程数(默认读config sync.threads; baostock单连接'
@@ -312,7 +314,7 @@ if __name__ == '__main__':
                 os.path.dirname(os.path.abspath(__file__)), '..', checkpoint)
 
     result = sync_all_market(
-        periods=[args.period],
+        periods=args.period or ['daily'],
         days=args.days,
         threads=args.threads,
         limit=args.limit,
