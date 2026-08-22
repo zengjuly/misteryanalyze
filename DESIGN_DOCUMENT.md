@@ -2041,7 +2041,28 @@ full 全量（3周期）后数据库：daily 5147只/weekly 5147只/monthly 5147
 - streamlit 常驻进程：_strength_cache 30min + session_state 双重缓存，
   首次 4.5s 后续秒回（命中 signal 缓存时不调用）
 
-**提交**：perf: 板块强度优先本地sector_kline表 个股分析提速(30.9s→4.5s)
+**提交**：perf: 板块强度优先本地sector_kline表 个股分析提速7倍(30.9s→4.5s)
+
+### 4.41 HITHINK API Key 统一进 config（docs/082211，2026-08-22）
+
+**需求（用户）**：HITHINK_FINANCE_API_KEY 加入 config，所有进程导入
+
+**实现**：
+1. `config/config.yaml` 顶层新增 `hithink_api_key` 字段
+2. `data/ths_client.py` `__init__`：env 无 key 时从 config 读取并
+   **注入 os.environ**（兼容顶层 config.hithink_api_key 与
+   data_source.ths_config.hithink_api_key 两处）——所有子进程（fuyao.py）
+   自动继承；任何进程 import ThsOfficialClient 即生效
+
+**坑**：`self.cfg` 是 `config['data_source']['ths_config']` 子配置，
+key 放顶层 config 时需用 `(config or {}).get()` 读取（首次注入失败根因）
+
+**验收**：env -u（无环境变量）→ import 后注入成功 → fuyao index-catalog 320 条
+
+**⚠️ 安全提醒**：key 明文在 config/config.yaml，**会随 git 提交进入远端仓库**；
+如不想入库可改放 config.local.yaml（.gitignore）由 cfg 读取
+
+**提交**：feat: HITHINK API Key 统一进config,ths_client启动注入env全局生效
 
 ## 5. 接口设计
 

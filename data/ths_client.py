@@ -43,8 +43,14 @@ class ThsOfficialClient:
         self.marketdb_path = os.environ.get('MARKETDB_DB_PATH') or (
             os.path.join(md_dir, 'market.duckdb') if md_dir
             and os.path.isdir(md_dir) else md_dir)
-        # API Key 统一来源: 环境变量 HITHINK_FINANCE_API_KEY（AGENTS.md 规范，
-        # key 不写入代码/配置/日志）
+        # API Key 统一来源（docs/082211）: 环境变量优先，其次 config.yaml
+        # hithink_api_key 字段 → 注入 os.environ，所有子进程（fuyao.py）自动继承
+        # 兼容两处：顶层 config.hithink_api_key 与 data_source.ths_config.hithink_api_key
+        if not os.environ.get('HITHINK_FINANCE_API_KEY'):
+            _key = (config or {}).get('hithink_api_key') or \
+                self.cfg.get('hithink_api_key') or ''
+            if _key:
+                os.environ['HITHINK_FINANCE_API_KEY'] = str(_key)
         # 子进程解释器: 默认当前 venv python（fuyao 依赖在 venv 中）
         self._fuyao_python = self.cfg.get('python_path') or sys.executable
         # 板块目录进程内缓存（docs/082203.md §2）
